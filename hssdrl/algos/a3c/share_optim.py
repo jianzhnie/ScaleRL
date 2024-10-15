@@ -30,20 +30,22 @@ class SharedAdam(optim.Adam):
     ) -> None:
         """Initialize the SharedAdam optimizer with shared states (step,
         exp_avg, and exp_avg_sq)."""
-        super(SharedAdam, self).__init__(
-            params, lr=lr, betas=betas, eps=eps, weight_decay=weight_decay
-        )
+        super(SharedAdam, self).__init__(params,
+                                         lr=lr,
+                                         betas=betas,
+                                         eps=eps,
+                                         weight_decay=weight_decay)
 
         # Initialize shared states (step, exp_avg, exp_avg_sq) for each parameter in the optimizer
         for group in self.param_groups:
-            for p in group["params"]:
+            for p in group['params']:
                 if p.requires_grad:
                     state = self.state[p]
-                    state["step"] = torch.zeros(1)
+                    state['step'] = torch.zeros(1)
                     # Shared step counter
-                    state["exp_avg"] = torch.zeros_like(p.data)
+                    state['exp_avg'] = torch.zeros_like(p.data)
                     # Exponential moving average of gradient
-                    state["exp_avg_sq"] = torch.zeros_like(p.data)
+                    state['exp_avg_sq'] = torch.zeros_like(p.data)
                     # Exponential moving average of squared gradient
 
     def share_memory(self) -> None:
@@ -53,15 +55,16 @@ class SharedAdam(optim.Adam):
         This is important for multi-processing scenarios.
         """
         for group in self.param_groups:
-            for p in group["params"]:
+            for p in group['params']:
                 if p.requires_grad:
                     state = self.state[p]
-                    state["step"].share_memory_()
-                    state["exp_avg"].share_memory_()
-                    state["exp_avg_sq"].share_memory_()
+                    state['step'].share_memory_()
+                    state['exp_avg'].share_memory_()
+                    state['exp_avg_sq'].share_memory_()
 
     def step(
-        self, closure: Optional[Callable[[], Optional[Tensor]]] = None
+        self,
+        closure: Optional[Callable[[], Optional[Tensor]]] = None
     ) -> Optional[Tensor]:
         """Perform a single optimization step (parameter update).
 
@@ -76,27 +79,27 @@ class SharedAdam(optim.Adam):
             loss = closure()
 
         for group in self.param_groups:
-            for p in group["params"]:
+            for p in group['params']:
                 if p.grad is None:
                     continue
 
                 grad = p.grad.data
                 if grad.is_sparse:
                     raise RuntimeError(
-                        "Adam does not support sparse gradients, consider SparseAdam instead."
+                        'Adam does not support sparse gradients, consider SparseAdam instead.'
                     )
 
                 state = self.state[p]
 
                 # Get the exponential moving averages of gradient and squared gradient
-                exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
-                beta1, beta2 = group["betas"]
+                exp_avg, exp_avg_sq = state['exp_avg'], state['exp_avg_sq']
+                beta1, beta2 = group['betas']
 
-                state["step"] += 1  # Update step counter
+                state['step'] += 1  # Update step counter
 
                 # Apply weight decay (L2 regularization) if applicable
-                if group["weight_decay"] != 0:
-                    grad = grad.add(group["weight_decay"], p.data)
+                if group['weight_decay'] != 0:
+                    grad = grad.add(group['weight_decay'], p.data)
 
                 # Update biased first moment estimate (exp_avg)
                 exp_avg.mul_(beta1).add_(1 - beta1, grad)
@@ -105,12 +108,13 @@ class SharedAdam(optim.Adam):
                 exp_avg_sq.mul_(beta2).addcmul_(1 - beta2, grad, grad)
 
                 # Compute denominator for bias-corrected step
-                denom = exp_avg_sq.sqrt().add_(group["eps"])
+                denom = exp_avg_sq.sqrt().add_(group['eps'])
 
                 # Compute bias-corrected learning rates
-                bias_correction1 = 1 - beta1 ** state["step"].item()
-                bias_correction2 = 1 - beta2 ** state["step"].item()
-                step_size = group["lr"] * math.sqrt(bias_correction2) / bias_correction1
+                bias_correction1 = 1 - beta1**state['step'].item()
+                bias_correction2 = 1 - beta2**state['step'].item()
+                step_size = group['lr'] * math.sqrt(
+                    bias_correction2) / bias_correction1
 
                 # Update parameters
                 p.data.addcdiv_(-step_size, exp_avg, denom)

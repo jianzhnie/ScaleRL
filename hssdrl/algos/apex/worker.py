@@ -56,9 +56,6 @@ class Actor(mp.Process):
             self.replay_buffer.add((obs, action, reward, next_obs, done))
             obs = next_obs
 
-            if len(self.replay_buffer) > self.batch_size:
-                batch = self.replay_buffer.sample(self.batch_size)
-
     def compute_prior(self, transitions):  # -> Any:
         obs, next_obs, actions, rewards, masks, steps = transitions
 
@@ -74,7 +71,7 @@ class Actor(mp.Process):
 
         pred_action = (pred * actions).sum(dim=1)
 
-        target = rewards + masks * pow(gamma, steps) * next_pred.max(1)[0]
+        target = rewards + masks * pow(self.gamma, steps) * next_pred.max(1)[0]
 
         td_error = pred_action - target
         prior = abs(td_error.detach())

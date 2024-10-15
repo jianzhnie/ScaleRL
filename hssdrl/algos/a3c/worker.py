@@ -1,19 +1,21 @@
+import argparse
 import multiprocessing as mp
 import time
 from collections import deque
-from typing import Optional
-import torch.nn as nn
-import torch
-import torch.nn.functional as F
-import torch.optim as optim
-import argparse
-from cyber.CyberBattleSim.typings.IPython import terminal
-from hssdrl.envs.gym_env import make_gym_env
+from typing import Deque, Optional
+
 import gymnasium as gym
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
+from hssdrl.envs.gym_env import make_gym_env
 
 
-def ensure_shared_grads(model: torch.nn.Module, shared_model: torch.nn.Module) -> None:
+def ensure_shared_grads(model: torch.nn.Module,
+                        shared_model: torch.nn.Module) -> None:
     """Copies the gradients from the model to the shared_model. This ensures
     that the shared model gets updated with gradients from worker threads.
 
@@ -21,15 +23,16 @@ def ensure_shared_grads(model: torch.nn.Module, shared_model: torch.nn.Module) -
         model (torch.nn.Module): The local model with calculated gradients.
         shared_model (torch.nn.Module): The shared model that needs updated gradients.
     """
-    for param, shared_param in zip(model.parameters(), shared_model.parameters()):
+    for param, shared_param in zip(model.parameters(),
+                                   shared_model.parameters()):
         if shared_param.grad is not None:
             return  # If the shared model already has gradients, skip.
         shared_param._grad = (
-            param.grad
-        )  # Copy gradient from local model to shared model
+            param.grad)  # Copy gradient from local model to shared model
 
 
 class ActorCritic(nn.Module):
+
     def __init__(self, obs_dim: int, hidden_dim: int, action_dim: int) -> None:
         super(ActorCritic, self).__init__()
         self.feature_net = nn.Sequential(
@@ -79,9 +82,9 @@ def train(
     action_dim = int(np.prod(action_shape))
 
     # Create a local model
-    model = ActorCritic(
-        obs_dim=obs_dim, hidden_dim=args.hidden_dim, action_dim=action_dim
-    )
+    model = ActorCritic(obs_dim=obs_dim,
+                        hidden_dim=args.hidden_dim,
+                        action_dim=action_dim)
 
     # Initialize the optimizer if not provided
     if optimizer is None:
@@ -162,24 +165,21 @@ def train(
         for i in reversed(range(len(rewards))):
             R = args.gamma * R + rewards[i]
             advantage = R - values[i]
-            value_loss = value_loss + 0.5 * advantage.pow(2)  # MSE loss for the critic
+            value_loss = value_loss + 0.5 * advantage.pow(
+                2)  # MSE loss for the critic
 
             # GAE computation
             delta_t = rewards[i] + args.gamma * values[i + 1] - values[i]
             gae = gae * args.gamma * args.gae_lambda + delta_t
 
             # Policy loss with entropy regularization
-            policy_loss = (
-                policy_loss
-                - log_probs[i] * gae.detach()
-                - args.entropy_coef * entropies[i]
-            )
+            policy_loss = (policy_loss - log_probs[i] * gae.detach() -
+                           args.entropy_coef * entropies[i])
 
         # Backpropagation
         optimizer.zero_grad()  # Clear the optimizer gradients
-        (
-            policy_loss + args.value_loss_coef * value_loss
-        ).backward()  # Compute gradients
+        (policy_loss +
+         args.value_loss_coef * value_loss).backward()  # Compute gradients
         torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
         # Gradient clipping
         # Ensure gradients are copied to the shared model
@@ -206,7 +206,15 @@ def test(rank: int, args, shared_model: torch.nn.Module, counter) -> None:
     env.seed(args.seed + rank)
 
     # Create a local copy of the model
-    model = ActorCritic()
+    # Create a local model
+    state_shape = env.observation_space.shape or env.observation_space.n
+    action_shape = env.action_space.shape or env.action_space.n
+    # Flatten state and action shapes
+    obs_dim = int(np.prod(state_shape))
+    action_dim = int(np.prod(action_shape))
+    model = ActorCritic(obs_dim=obs_dim,
+                        hidden_dim=args.hidden_dim,
+                        action_dim=action_dim)
     model.eval()
     # Set the model to evaluation mode
 
@@ -252,9 +260,8 @@ def test(rank: int, args, shared_model: torch.nn.Module, counter) -> None:
         # Print performance metrics at the end of the episode
         if done:
             elapsed_time = time.time() - start_time  # Calculate elapsed time
-            fps = (
-                counter.value / elapsed_time
-            )  # Calculate FPS based on number of steps and elapsed time
+            fps = (counter.value / elapsed_time
+                   )  # Calculate FPS based on number of steps and elapsed time
             print(
                 f"Time {time.strftime('%Hh %Mm %Ss', time.gmtime(elapsed_time))}, "
                 f'num steps {counter.value}, FPS {fps:.0f}, '
@@ -268,7 +275,8 @@ def test(rank: int, args, shared_model: torch.nn.Module, counter) -> None:
             state = env.reset()
 
             # Sleep to throttle the testing process
-            time.sleep(60)  # Sleep for 60 seconds before starting the next episode
+            time.sleep(
+                60)  # Sleep for 60 seconds before starting the next episode
 
         # Convert the next state to a tensor for further model processing
         state = torch.from_numpy(state)

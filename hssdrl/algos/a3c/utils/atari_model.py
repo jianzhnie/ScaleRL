@@ -1,15 +1,15 @@
+from typing import Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple
 
 
-def normalized_columns_initializer(
-    weights: torch.Tensor, std: float = 1.0
-) -> torch.Tensor:
-    """
-    Initializes the weights of the given tensor using a normalized column-based initialization.
+def normalized_columns_initializer(weights: torch.Tensor,
+                                   std: float = 1.0) -> torch.Tensor:
+    """Initializes the weights of the given tensor using a normalized column-
+    based initialization.
 
     Args:
         weights (torch.Tensor): The weight tensor to initialize.
@@ -24,9 +24,9 @@ def normalized_columns_initializer(
 
 
 def weights_init(m: nn.Module) -> None:
-    """
-    Initializes the weights and biases of a module using uniform distribution.
-    It applies specific initialization strategies for Convolutional and Linear layers.
+    """Initializes the weights and biases of a module using uniform
+    distribution. It applies specific initialization strategies for
+    Convolutional and Linear layers.
 
     Args:
         m (nn.Module): The layer (module) whose weights need to be initialized.
@@ -34,18 +34,18 @@ def weights_init(m: nn.Module) -> None:
     classname = m.__class__.__name__
 
     # Initialization for Convolutional layers
-    if classname.find("Conv") != -1:
+    if classname.find('Conv') != -1:
         weight_shape = list(m.weight.data.size())
-        fan_in = np.prod(weight_shape[1:4])  # Product of input feature dimensions
-        fan_out = (
-            np.prod(weight_shape[2:4]) * weight_shape[0]
-        )  # Product of output feature dimensions
+        fan_in = np.prod(
+            weight_shape[1:4])  # Product of input feature dimensions
+        fan_out = (np.prod(weight_shape[2:4]) * weight_shape[0]
+                   )  # Product of output feature dimensions
         w_bound = np.sqrt(6.0 / (fan_in + fan_out))
         m.weight.data.uniform_(-w_bound, w_bound)
         m.bias.data.fill_(0)
 
     # Initialization for Linear layers
-    elif classname.find("Linear") != -1:
+    elif classname.find('Linear') != -1:
         weight_shape = list(m.weight.data.size())
         fan_in = weight_shape[1]  # Input dimensions
         fan_out = weight_shape[0]  # Output dimensions
@@ -55,9 +55,9 @@ def weights_init(m: nn.Module) -> None:
 
 
 class ActorCritic(nn.Module):
-    """
-    The ActorCritic model consists of convolutional layers followed by an LSTM and two linear layers.
-    It outputs both the critic value (for value-based RL) and the actor policy (for action selection).
+    """The ActorCritic model consists of convolutional layers followed by an
+    LSTM and two linear layers. It outputs both the critic value (for value-
+    based RL) and the actor policy (for action selection).
 
     Attributes:
         conv1, conv2, conv3, conv4 (nn.Conv2d): Four convolutional layers for processing input images.
@@ -67,8 +67,7 @@ class ActorCritic(nn.Module):
     """
 
     def __init__(self, num_inputs: int, action_dim: torch.Tensor) -> None:
-        """
-        Initializes the ActorCritic model architecture.
+        """Initializes the ActorCritic model architecture.
 
         Args:
             num_inputs (int): Number of input channels (e.g., the number of image channels).
@@ -86,7 +85,8 @@ class ActorCritic(nn.Module):
         self.lstm = nn.LSTMCell(32 * 3 * 3, 256)
 
         # Define actor and critic layers
-        self.critic_linear = nn.Linear(256, 1)  # Single output for value prediction
+        self.critic_linear = nn.Linear(256,
+                                       1)  # Single output for value prediction
         self.actor_linear = nn.Linear(256, action_dim)
         # Output for action probabilities
 
@@ -95,12 +95,10 @@ class ActorCritic(nn.Module):
 
         # Custom initialization for actor and critic layers
         self.actor_linear.weight.data = normalized_columns_initializer(
-            self.actor_linear.weight.data, 0.01
-        )
+            self.actor_linear.weight.data, 0.01)
         self.actor_linear.bias.data.fill_(0)
         self.critic_linear.weight.data = normalized_columns_initializer(
-            self.critic_linear.weight.data, 1.0
-        )
+            self.critic_linear.weight.data, 1.0)
         self.critic_linear.bias.data.fill_(0)
 
         # Zero out the LSTM biases
@@ -113,8 +111,7 @@ class ActorCritic(nn.Module):
     def forward(
         self, inputs: Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]
     ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Forward pass through the ActorCritic model.
+        """Forward pass through the ActorCritic model.
 
         Args:
             inputs (Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]):

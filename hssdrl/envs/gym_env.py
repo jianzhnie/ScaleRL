@@ -6,8 +6,8 @@ def make_gym_env(
     env_id: str,
     seed: int = 42,
     capture_video: bool = False,
-    save_video_dir: str = "work_dir",
-    save_video_name: str = "test",
+    save_video_dir: str = 'work_dir',
+    save_video_name: str = 'test',
 ) -> RecordEpisodeStatistics:
     """Create and wrap the environment with necessary wrappers.
 
@@ -22,8 +22,9 @@ def make_gym_env(
         RecordEpisodeStatistics: Wrapped environment.
     """
     if capture_video:
-        env = gym.make(env_id, render_mode="rgb_array")
-        env = gym.wrappers.RecordVideo(env, f"{save_video_dir}/{save_video_name}")
+        env = gym.make(env_id, render_mode='rgb_array')
+        env = gym.wrappers.RecordVideo(env,
+                                       f'{save_video_dir}/{save_video_name}')
     else:
         env = gym.make(env_id)
     env = gym.wrappers.RecordEpisodeStatistics(env)
