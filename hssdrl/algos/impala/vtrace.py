@@ -15,29 +15,28 @@ import torch
 import torch.nn.functional as F
 
 VTraceFromLogitsReturns = collections.namedtuple(
-    "VTraceFromLogitsReturns",
+    'VTraceFromLogitsReturns',
     [
-        "vs",
-        "pg_advantages",
-        "log_rhos",
-        "behavior_action_log_probs",
-        "target_action_log_probs",
+        'vs',
+        'pg_advantages',
+        'log_rhos',
+        'behavior_action_log_probs',
+        'target_action_log_probs',
     ],
 )
 
-VTraceReturns = collections.namedtuple("VTraceReturns", "vs pg_advantages")
+VTraceReturns = collections.namedtuple('VTraceReturns', 'vs pg_advantages')
 
 
-def action_log_probs(
-    policy_logits: torch.Tensor, actions: torch.Tensor
-) -> torch.Tensor:
+def action_log_probs(policy_logits: torch.Tensor,
+                     actions: torch.Tensor) -> torch.Tensor:
     """Compute the log probability of the actions under the policy."""
 
     log_pi = F.log_softmax(torch.flatten(policy_logits, 0, -2), dim=-1)
     return -F.nll_loss(
         log_pi,
         torch.flatten(actions),
-        reduction="none",
+        reduction='none',
     ).view_as(actions)
 
 
@@ -55,7 +54,8 @@ def from_logits(
     """V-trace for softmax policies."""
 
     target_action_log_probs = action_log_probs(target_policy_logits, actions)
-    behavior_action_log_probs = action_log_probs(behavior_policy_logits, actions)
+    behavior_action_log_probs = action_log_probs(behavior_policy_logits,
+                                                 actions)
     log_rhos = target_action_log_probs - behavior_action_log_probs
 
     vtrace_returns = from_importance_weights(
@@ -141,10 +141,10 @@ def from_importance_weights(
         cs = torch.clamp(rhos, max=1.0)
         # Append bootstrapped value to get [v1, ..., v_t+1]
         values_t_plus_1 = torch.cat(
-            [values[1:], torch.unsqueeze(bootstrap_value, 0)], dim=0
-        )
+            [values[1:], torch.unsqueeze(bootstrap_value, 0)], dim=0)
         # \delta_s * V
-        deltas = clipped_rhos * (rewards + discounts * values_t_plus_1 - values)
+        deltas = clipped_rhos * (rewards + discounts * values_t_plus_1 -
+                                 values)
 
         acc = torch.zeros_like(bootstrap_value)
         result = []
@@ -160,13 +160,13 @@ def from_importance_weights(
         # Advantage for policy gradient.
         broadcasted_bootstrap_values = torch.ones_like(vs[0]) * bootstrap_value
         vs_t_plus_1 = torch.cat(
-            [vs[1:], broadcasted_bootstrap_values.unsqueeze(0)], dim=0
-        )
+            [vs[1:], broadcasted_bootstrap_values.unsqueeze(0)], dim=0)
         if clip_pg_rho_threshold is not None:
             clipped_pg_rhos = torch.clamp(rhos, max=clip_pg_rho_threshold)
         else:
             clipped_pg_rhos = rhos
-        pg_advantages = clipped_pg_rhos * (rewards + discounts * vs_t_plus_1 - values)
+        pg_advantages = clipped_pg_rhos * (rewards + discounts * vs_t_plus_1 -
+                                           values)
 
         # Make sure no gradients backpropagated through the returned values.
         return VTraceReturns(vs=vs, pg_advantages=pg_advantages)

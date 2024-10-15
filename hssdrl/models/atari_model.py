@@ -33,8 +33,14 @@ class AtariNet(nn.Module):
             kernel_size=8,
             stride=4,
         )
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1)
+        self.conv2 = nn.Conv2d(in_channels=32,
+                               out_channels=64,
+                               kernel_size=4,
+                               stride=2)
+        self.conv3 = nn.Conv2d(in_channels=64,
+                               out_channels=64,
+                               kernel_size=3,
+                               stride=1)
 
         # Fully connected layer
         self.fc = nn.Linear(3136, 512)
@@ -44,15 +50,16 @@ class AtariNet(nn.Module):
 
         self.use_lstm = use_lstm
         if use_lstm:
-            self.rnn_layer = nn.LSTM(rnn_output_size, rnn_output_size, num_layers=2)
+            self.rnn_layer = nn.LSTM(rnn_output_size,
+                                     rnn_output_size,
+                                     num_layers=2)
 
         # Policy and baseline outputs
         self.policy = nn.Linear(rnn_output_size, self.num_actions)
         self.baseline = nn.Linear(rnn_output_size, 1)
 
     def initial_hidden_state(
-        self, batch_size: int
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+            self, batch_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """Returns the initial hidden state for the LSTM.
 
         Args:
@@ -64,14 +71,13 @@ class AtariNet(nn.Module):
         if not self.use_lstm:
             return tuple()
         return tuple(
-            torch.zeros(
-                self.rnn_layer.num_layers, batch_size, self.rnn_layer.hidden_size
-            )
-            for _ in range(2)
-        )
+            torch.zeros(self.rnn_layer.num_layers, batch_size,
+                        self.rnn_layer.hidden_size) for _ in range(2))
 
     def forward(
-        self, inputs: Dict[str, Any], rnn_state: Tuple[torch.Tensor, torch.Tensor] = ()
+        self,
+        inputs: Dict[str, Any],
+        rnn_state: Tuple[torch.Tensor, torch.Tensor] = ()
     ) -> Tuple[Dict[str, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]:
         """Forward pass through the network.
 
@@ -82,7 +88,7 @@ class AtariNet(nn.Module):
         Returns:
             Tuple[Dict[str, torch.Tensor], Tuple[torch.Tensor, torch.Tensor]]: Outputs and updated rnn state.
         """
-        x = inputs["obs"]  # [T, B, C, H, W]
+        x = inputs['obs']  # [T, B, C, H, W]
         T, B, *_ = x.shape
         x = torch.flatten(x, 0, 1)  # Merge time and batch
         x = x.float() / 255.0  # Normalize input
@@ -95,21 +101,21 @@ class AtariNet(nn.Module):
         x = F.relu(self.fc(x))
 
         # Prepare input for LSTM or fully connected layers
-        one_hot_last_action = F.one_hot(
-            inputs["action"].view(T * B), self.num_actions
-        ).float()
-        clipped_reward = torch.clamp(inputs["reward"], -1, 1).view(T * B, 1)
+        one_hot_last_action = F.one_hot(inputs['action'].view(T * B),
+                                        self.num_actions).float()
+        clipped_reward = torch.clamp(inputs['reward'], -1, 1).view(T * B, 1)
         rnn_input = torch.cat([x, clipped_reward, one_hot_last_action], dim=-1)
 
         if self.use_lstm:
             rnn_input = rnn_input.view(T, B, -1)
             rnn_output_list = []
-            notdone = (~inputs["done"]).float()
+            notdone = (~inputs['done']).float()
             for input_seq, no_do in zip(rnn_input.unbind(), notdone.unbind()):
                 # Reset rnn state to zero whenever an episode ends
                 no_do = no_do.view(1, -1, 1)
                 rnn_state = tuple(no_do * s for s in rnn_state)
-                output, rnn_state = self.rnn_layer(input_seq.unsqueeze(0), rnn_state)
+                output, rnn_state = self.rnn_layer(input_seq.unsqueeze(0),
+                                                   rnn_state)
                 rnn_output_list.append(output)
             rnn_output = torch.flatten(torch.cat(rnn_output_list), 0, 1)
         else:
@@ -122,7 +128,8 @@ class AtariNet(nn.Module):
 
         # Action selection
         if self.training:
-            action = torch.multinomial(F.softmax(policy_logits, dim=1), num_samples=1)
+            action = torch.multinomial(F.softmax(policy_logits, dim=1),
+                                       num_samples=1)
         else:
             action = torch.argmax(policy_logits, dim=1)
 
@@ -131,6 +138,6 @@ class AtariNet(nn.Module):
         baseline = baseline.view(T, B)
         action = action.view(T, B)
 
-        return dict(
-            policy_logits=policy_logits, baseline=baseline, action=action
-        ), rnn_state
+        return dict(policy_logits=policy_logits,
+                    baseline=baseline,
+                    action=action), rnn_state

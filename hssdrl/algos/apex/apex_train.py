@@ -9,6 +9,7 @@ from hssdrl.algos.apex.worker import Actor, Learner
 
 
 class ApexTrainer(object):
+
     def __init__(
         self,
         env_name: str,
@@ -25,7 +26,7 @@ class ApexTrainer(object):
         alpha: float = 0.6,
         beta: float = 0.4,
         learning_rate: float = 0.0001,
-        device: str = "cpu",
+        device: str = 'cpu',
     ) -> None:
         self.env_name = env_name
         self.num_actors = num_actors
@@ -50,19 +51,20 @@ class ApexTrainer(object):
         self.model = QNet(self.state_dim, self.action_dim)
         self.target_model = QNet(self.state_dim, self.action_dim)
         self.target_model.load_state_dict(self.model.state_dict())
-        self.replay_buffer = PrioritizedReplayBuffer(
-            buffer_size=buffer_size, alpha=alpha, beta=beta
-        )
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
-        self.global_step = mp.Value("i", 0)
-        self.global_epsode = mp.Value("i", 0)
-        self.global_episode_reward = mp.Value("d", 0)
+        self.replay_buffer = PrioritizedReplayBuffer(buffer_size=buffer_size,
+                                                     alpha=alpha,
+                                                     beta=beta)
+        self.optimizer = torch.optim.Adam(self.model.parameters(),
+                                          lr=learning_rate)
+        self.global_step = mp.Value('i', 0)
+        self.global_epsode = mp.Value('i', 0)
+        self.global_episode_reward = mp.Value('d', 0)
         self.global_buffer_pipe = mp.Queue()
 
     def train(self) -> None:
         actors = []
         for actor_id in range(len(self.num_actors)):
-            actor_name = "actor" + str(actor_id)
+            actor_name = 'actor' + str(actor_id)
             actor = Actor(
                 actor_name,
                 self.env_name,
@@ -90,6 +92,6 @@ class ApexTrainer(object):
             p.join()
 
 
-if __name__ == "__main__":
-    trainer = ApexTrainer(env_name="CartPole-v1")
+if __name__ == '__main__':
+    trainer = ApexTrainer(env_name='CartPole-v1')
     trainer.train()

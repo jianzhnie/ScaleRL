@@ -4,7 +4,8 @@ from typing import Any, Dict, Tuple
 import numpy as np
 
 # Define a namedtuple for transitions
-Transition = namedtuple("Transition", ("obs", "action", "reward", "next_obs", "done"))
+Transition = namedtuple('Transition',
+                        ('obs', 'action', 'reward', 'next_obs', 'done'))
 
 
 class PrioritizedReplayBuffer:
@@ -22,7 +23,10 @@ class PrioritizedReplayBuffer:
         prior_buffer (deque): Stores the priorities associated with each transition.
     """
 
-    def __init__(self, buffer_size: int, alpha: float = 0.6, beta: float = 0.4) -> None:
+    def __init__(self,
+                 buffer_size: int,
+                 alpha: float = 0.6,
+                 beta: float = 0.4) -> None:
         """Initializes the PrioritizedReplayBuffer with a specified size and
         prioritization settings.
 
@@ -76,7 +80,7 @@ class PrioritizedReplayBuffer:
             - weights (np.ndarray): Importance sampling weights for each sampled transition.
         """
         if len(self.buffer) == 0:
-            raise ValueError("The buffer is empty. Cannot sample.")
+            raise ValueError('The buffer is empty. Cannot sample.')
 
         # Convert deque of priorities to numpy array for manipulation
         prior_probs = np.array(self.prior_buffer)
@@ -86,26 +90,29 @@ class PrioritizedReplayBuffer:
         sampling_probs = scaled_priorities / np.sum(scaled_priorities)
 
         # Randomly sample indices based on the computed probabilities
-        indices = np.random.choice(len(self.buffer), size=batch_size, p=sampling_probs)
+        indices = np.random.choice(len(self.buffer),
+                                   size=batch_size,
+                                   p=sampling_probs)
 
         # Sample transitions and compute importance sampling weights
         samples = [self.buffer[idx] for idx in indices]
-        weights = (len(self.buffer) * sampling_probs[indices]) ** (-self.beta)
+        weights = (len(self.buffer) * sampling_probs[indices])**(-self.beta)
         weights /= weights.max()  # Normalize weights
 
         # Extract individual components from sampled transitions
         obs, actions, rewards, next_obs, dones = zip(*samples)
         batch = {
-            "obs": np.array(obs),
-            "actions": np.array(actions),
-            "rewards": np.array(rewards),
-            "next_obs": np.array(next_obs),
-            "dones": np.array(dones),
+            'obs': np.array(obs),
+            'actions': np.array(actions),
+            'rewards': np.array(rewards),
+            'next_obs': np.array(next_obs),
+            'dones': np.array(dones),
         }
 
         return np.array(indices), batch, weights
 
-    def update_priorities(self, indices: np.ndarray, priorities: np.ndarray) -> None:
+    def update_priorities(self, indices: np.ndarray,
+                          priorities: np.ndarray) -> None:
         """Updates the priorities of specific transitions in the buffer.
 
         Args:
@@ -113,13 +120,13 @@ class PrioritizedReplayBuffer:
             priorities (np.ndarray): The new priorities for each transition.
         """
         if len(indices) != len(priorities):
-            raise ValueError("Indices and priorities must have the same length.")
+            raise ValueError(
+                'Indices and priorities must have the same length.')
 
         for idx, priority in zip(indices, priorities):
             if idx < 0 or idx >= len(self.prior_buffer):
                 raise IndexError(
-                    f"Index {idx} is out of bounds for the priority buffer."
-                )
+                    f'Index {idx} is out of bounds for the priority buffer.')
             self.prior_buffer[idx] = priority
 
     def __len__(self) -> int:
