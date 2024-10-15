@@ -3,7 +3,6 @@ import torch.nn as nn
 
 
 class QNet(nn.Module):
-
     def __init__(
         self,
         obs_dim: int,

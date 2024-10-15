@@ -59,8 +59,7 @@ class TorchEnvWrapper(object):
             Dict[str, torch.Tensor]: A dictionary containing the new observation, action, reward,
             done flag, episode return, and step count.
         """
-        obs, reward, terminated, truncated, _ = self.gym_env.step(
-            action.item())
+        obs, reward, terminated, truncated, _ = self.gym_env.step(action.item())
         self.episode_step += 1
         self.episode_return += reward
 

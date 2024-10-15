@@ -13,10 +13,10 @@ import torch.nn.functional as F
 import torch.optim as optim
 from gymnasium.wrappers import RecordEpisodeStatistics
 
-from rlzero.utils.logger_utils import get_logger
-from rlzero.utils.lr_scheduler import LinearDecayScheduler
+from hssdrl.utils.logger_utils import get_logger
+from hssdrl.utils.lr_scheduler import LinearDecayScheduler
 
-logger = get_logger('impala')
+logger = get_logger("impala")
 
 
 def ceil_to_nearest_hundred(num: int):
@@ -27,8 +27,8 @@ def make_env(
     env_id: str,
     seed: int = 42,
     capture_video: bool = False,
-    save_video_dir: str = 'work_dir',
-    save_video_name: str = 'test',
+    save_video_dir: str = "work_dir",
+    save_video_name: str = "test",
 ) -> RecordEpisodeStatistics:
     """Create and wrap the environment with necessary wrappers.
 
@@ -43,9 +43,8 @@ def make_env(
         RecordEpisodeStatistics: Wrapped environment.
     """
     if capture_video:
-        env = gym.make(env_id, render_mode='rgb_array')
-        env = gym.wrappers.RecordVideo(env,
-                                       f'{save_video_dir}/{save_video_name}')
+        env = gym.make(env_id, render_mode="rgb_array")
+        env = gym.wrappers.RecordVideo(env, f"{save_video_dir}/{save_video_name}")
     else:
         env = gym.make(env_id)
     env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -110,11 +109,13 @@ class ReplayBuffer:
         """
         experiences = random.sample(self.memory, k=batch_size)
         states, actions, rewards, next_states, dones = zip(*experiences)
-        batch = dict(states=np.array(states),
-                     actions=np.array(actions),
-                     rewards=np.array(rewards),
-                     next_states=np.array(next_states),
-                     dones=np.array(dones))
+        batch = dict(
+            states=np.array(states),
+            actions=np.array(actions),
+            rewards=np.array(rewards),
+            next_states=np.array(next_states),
+            dones=np.array(dones),
+        )
         return batch
 
     def __len__(self) -> int:
@@ -157,7 +158,7 @@ class ImpalaDQN:
         gamma: float = 0.99,
         batch_size: int = 64,
         learning_rate: float = 0.001,
-        device: str = 'cpu',
+        device: str = "cpu",
     ) -> None:
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -176,8 +177,7 @@ class ImpalaDQN:
         self.q_network = QNetwork(state_dim, action_dim).to(device)
         self.target_network = QNetwork(state_dim, action_dim).to(device)
         self.target_network.load_state_dict(self.q_network.state_dict())
-        self.optimizer = optim.Adam(self.q_network.parameters(),
-                                    lr=learning_rate)
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
         self.eps_greedy_start = eps_greedy_start
         self.eps_greedy_end = eps_greedy_end
         self.eps_greedy_scheduler = LinearDecayScheduler(
@@ -202,8 +202,7 @@ class ImpalaDQN:
         else:
             action = self.predict(obs)
 
-        self.eps_greedy = max(self.eps_greedy_scheduler.step(),
-                              self.eps_greedy_end)
+        self.eps_greedy = max(self.eps_greedy_scheduler.step(), self.eps_greedy_end)
 
         return action
 
@@ -226,8 +225,9 @@ class ImpalaDQN:
         action = torch.argmax(q_values, dim=1).item()
         return action
 
-    def actor_process(self, actor_id: int, env: gym.Env, data_queue: mp.Queue,
-                      stop_event: mp.Event) -> None:
+    def actor_process(
+        self, actor_id: int, env: gym.Env, data_queue: mp.Queue, stop_event: mp.Event
+    ) -> None:
         """Actor process that interacts with the environment and collects
         experiences.
 
@@ -237,26 +237,21 @@ class ImpalaDQN:
             data_queue (mp.Queue): Queue to send collected experiences to the learner.
             stop_event (mp.Event): Event to signal the actor to stop.
         """
-        logger.info(f'Actor {actor_id} started')
+        logger.info(f"Actor {actor_id} started")
         try:
             while not stop_event.is_set():
                 state, _ = env.reset()
-                buffer: List[Tuple[np.ndarray, int, float, np.ndarray,
-                                   bool]] = []
+                buffer: List[Tuple[np.ndarray, int, float, np.ndarray, bool]] = []
                 done = False
                 while not done:
                     action = self.get_action(state)
-                    next_state, reward, terminal, truncated, info = env.step(
-                        action)
+                    next_state, reward, terminal, truncated, info = env.step(action)
                     done = terminal or truncated
 
-                    if info and 'episode' in info:
-                        info_item = {
-                            k: v.item()
-                            for k, v in info['episode'].items()
-                        }
-                        episode_reward = info_item['r']
-                        episode_step = info_item['l']
+                    if info and "episode" in info:
+                        info_item = {k: v.item() for k, v in info["episode"].items()}
+                        episode_reward = info_item["r"]
+                        episode_step = info_item["l"]
 
                     with self.global_step.get_lock():
                         self.global_step.value += 1
@@ -268,51 +263,62 @@ class ImpalaDQN:
                 global_step = ceil_to_nearest_hundred(self.global_step.value)
                 if actor_id == 0 and global_step % self.train_log_interval == 0:
                     logger.info(
-                        'Actor {}: , episode step: {}, episode reward: {}'.
-                        format(actor_id, episode_step, episode_reward), )
+                        "Actor {}: , episode step: {}, episode reward: {}".format(
+                            actor_id, episode_step, episode_reward
+                        ),
+                    )
 
         except Exception as e:
-            logger.error(f'Exception in actor process {actor_id}: {e}')
+            logger.error(f"Exception in actor process {actor_id}: {e}")
             traceback.print_exc()
 
     def learn(self, batch: Dict[str, np.array]) -> None:
-        states = torch.tensor(batch['states'],
-                              dtype=torch.float32).to(self.device)
-        actions = (torch.tensor(batch['actions'],
-                                dtype=torch.long).unsqueeze(1).to(self.device))
-        rewards = (torch.tensor(batch['rewards'],
-                                dtype=torch.float32).unsqueeze(1).to(
-                                    self.device))
-        next_states = torch.tensor(batch['next_states'],
-                                   dtype=torch.float32).to(self.device)
-        dones = (torch.tensor(
-            batch['dones'], dtype=torch.float32).unsqueeze(1).to(self.device))
+        states = torch.tensor(batch["states"], dtype=torch.float32).to(self.device)
+        actions = (
+            torch.tensor(batch["actions"], dtype=torch.long)
+            .unsqueeze(1)
+            .to(self.device)
+        )
+        rewards = (
+            torch.tensor(batch["rewards"], dtype=torch.float32)
+            .unsqueeze(1)
+            .to(self.device)
+        )
+        next_states = torch.tensor(batch["next_states"], dtype=torch.float32).to(
+            self.device
+        )
+        dones = (
+            torch.tensor(batch["dones"], dtype=torch.float32)
+            .unsqueeze(1)
+            .to(self.device)
+        )
 
         # Compute current Q values
         current_q_values = self.q_network(states).gather(1, actions)
         # Compute target Q values
         if self.double_dqn:
             with torch.no_grad():
-                greedy_action = self.q_network(next_states).max(
-                    dim=1, keepdim=True)[1]
+                greedy_action = self.q_network(next_states).max(dim=1, keepdim=True)[1]
                 next_q_values = self.target_network(next_states).gather(
-                    1, greedy_action)
+                    1, greedy_action
+                )
         else:
             with torch.no_grad():
                 next_q_values = self.target_network(next_states).max(
-                    dim=1, keepdim=True)[0]
+                    dim=1, keepdim=True
+                )[0]
 
         target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
 
         # Compute loss
-        loss = F.mse_loss(current_q_values, target_q_values, reduction='mean')
+        loss = F.mse_loss(current_q_values, target_q_values, reduction="mean")
 
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
         learn_result = {
-            'loss': loss.item(),
+            "loss": loss.item(),
         }
         return learn_result
 
@@ -326,8 +332,9 @@ class ImpalaDQN:
         """
 
         try:
-            while (self.global_step.value < self.max_timesteps
-                   and not stop_event.is_set()):
+            while (
+                self.global_step.value < self.max_timesteps and not stop_event.is_set()
+            ):
                 try:
                     # Non-blocking with timeout
                     data = data_queue.get()
@@ -344,24 +351,23 @@ class ImpalaDQN:
                     learn_result = self.learn(batch)
 
                     if global_step % self.target_update_frequency == 0:
-                        self.target_network.load_state_dict(
-                            self.q_network.state_dict())
+                        self.target_network.load_state_dict(self.q_network.state_dict())
 
                     if global_step % self.train_log_interval == 0:
                         logger.info(
-                            f'Step {global_step}: Train results: {learn_result}'
+                            f"Step {global_step}: Train results: {learn_result}"
                         )
 
                 if global_step % self.eval_interval == 0:
                     eval_results = self.evaluate()
                     logger.info(
-                        f'Step {global_step}: Evaluation results: {eval_results}'
+                        f"Step {global_step}: Evaluation results: {eval_results}"
                     )
 
         except Exception as e:
-            logger.error(f'Exception in learner process: {e}')
+            logger.error(f"Exception in learner process: {e}")
         finally:
-            logger.info('Learner process is shutting down')
+            logger.info("Learner process is shutting down")
 
     def evaluate(self, n_eval_episodes: int = 5) -> dict[str, float]:
         """Evaluate the model on the test environment.
@@ -372,7 +378,7 @@ class ImpalaDQN:
         Returns:
             dict[str, float]: Evaluation results.
         """
-        test_env = make_env(env_id='CartPole-v0')
+        test_env = make_env(env_id="CartPole-v0")
         eval_rewards = []
         eval_steps = []
         for _ in range(n_eval_episodes):
@@ -382,40 +388,36 @@ class ImpalaDQN:
             episode_step = 0
             while not done:
                 action = self.predict(obs)
-                next_obs, reward, terminated, truncated, info = test_env.step(
-                    action)
+                next_obs, reward, terminated, truncated, info = test_env.step(action)
                 obs = next_obs
                 done = terminated or truncated
-                if info and 'episode' in info:
-                    info_item = {
-                        k: v.item()
-                        for k, v in info['episode'].items()
-                    }
-                    episode_reward = info_item['r']
-                    episode_step = info_item['l']
+                if info and "episode" in info:
+                    info_item = {k: v.item() for k, v in info["episode"].items()}
+                    episode_reward = info_item["r"]
+                    episode_step = info_item["l"]
                 if done:
                     test_env.reset()
             eval_rewards.append(episode_reward)
             eval_steps.append(episode_step)
 
         return {
-            'reward_mean': np.mean(eval_rewards),
-            'reward_std': np.std(eval_rewards),
-            'length_mean': np.mean(eval_steps),
-            'length_std': np.std(eval_steps),
+            "reward_mean": np.mean(eval_rewards),
+            "reward_std": np.std(eval_rewards),
+            "length_mean": np.mean(eval_steps),
+            "length_std": np.std(eval_steps),
         }
 
     def run(self) -> None:
         """Run the IMPALA DQN algorithm."""
 
         self.replay_buffer = ReplayBuffer(self.buffer_size)
-        self.global_step = mp.Value('i', 0)
+        self.global_step = mp.Value("i", 0)
         self.data_queue = mp.Queue(maxsize=500)
 
         stop_event = mp.Event()
         actor_processes = []
         for actor_id in range(self.num_actors):
-            train_env = make_env(env_id='CartPole-v0')
+            train_env = make_env(env_id="CartPole-v0")
             actor = mp.Process(
                 target=self.actor_process,
                 args=(actor_id, train_env, self.data_queue, stop_event),
@@ -423,32 +425,33 @@ class ImpalaDQN:
             actor.start()
             actor_processes.append(actor)
 
-        learner = mp.Process(target=self.learner_process,
-                             args=(self.data_queue, stop_event))
+        learner = mp.Process(
+            target=self.learner_process, args=(self.data_queue, stop_event)
+        )
         learner.start()
 
         try:
             learner.join()
         except KeyboardInterrupt:
-            logger.info(
-                'Keyboard interrupt received, stopping all processes...')
+            logger.info("Keyboard interrupt received, stopping all processes...")
         finally:
             stop_event.set()
             for actor in actor_processes:
                 actor.join(timeout=1)  # 给予一定的时间让进程正常结束
                 if actor.is_alive():
                     logger.warning(
-                        f'Actor process {actor.pid} did not terminate, force terminating...'
+                        f"Actor process {actor.pid} did not terminate, force terminating..."
                     )
                     actor.terminate()
             learner.join(timeout=1)
             if learner.is_alive():
                 logger.warning(
-                    'Learner process did not terminate, force terminating...')
+                    "Learner process did not terminate, force terminating..."
+                )
                 learner.terminate()
-            logger.info('All processes have been stopped.')
+            logger.info("All processes have been stopped.")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     impala_dqn = ImpalaDQN(state_dim=4, action_dim=2, num_actors=10)
     impala_dqn.run()

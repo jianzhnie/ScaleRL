@@ -9,8 +9,11 @@ from gymnasium import Env
 
 
 def _parse_reset_result(reset_result):
-    contains_info = (isinstance(reset_result, tuple) and len(reset_result) == 2
-                     and isinstance(reset_result[1], dict))
+    contains_info = (
+        isinstance(reset_result, tuple)
+        and len(reset_result) == 2
+        and isinstance(reset_result[1], dict)
+    )
     if contains_info:
         return reset_result[0], reset_result[1], contains_info
     return reset_result, {}, contains_info
@@ -29,11 +32,11 @@ class NoopResetEnv(gym.Wrapper):
         super().__init__(env)
         self.noop_max = noop_max
         self.noop_action = 0
-        assert env.unwrapped.get_action_meanings()[0] == 'NOOP'
+        assert env.unwrapped.get_action_meanings()[0] == "NOOP"
 
     def reset(self, **kwargs):
         _, info, return_info = _parse_reset_result(self.env.reset(**kwargs))
-        if hasattr(self.unwrapped.np_random, 'integers'):
+        if hasattr(self.unwrapped.np_random, "integers"):
             noops = self.unwrapped.np_random.integers(1, self.noop_max + 1)
         else:
             noops = self.unwrapped.np_random.randint(1, self.noop_max + 1)
@@ -135,8 +138,7 @@ class EpisodicLifeEnv(gym.Wrapper):
         and the learner need not know about any of this behind-the-scenes.
         """
         if self.was_real_done:
-            obs, info, self._return_info = _parse_reset_result(
-                self.env.reset(**kwargs))
+            obs, info, self._return_info = _parse_reset_result(self.env.reset(**kwargs))
         else:
             # no-op step to advance from terminal/lost life state
             step_result = self.env.step(0)
@@ -157,7 +159,7 @@ class FireResetEnv(gym.Wrapper):
 
     def __init__(self, env) -> None:
         super().__init__(env)
-        assert env.unwrapped.get_action_meanings()[1] == 'FIRE'
+        assert env.unwrapped.get_action_meanings()[1] == "FIRE"
         assert len(env.unwrapped.get_action_meanings()) >= 3
 
     def reset(self, **kwargs):
@@ -185,8 +187,7 @@ class WarpFrame(gym.ObservationWrapper):
     def observation(self, frame):
         """Returns the current observation from a frame."""
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        return cv2.resize(frame, (self.size, self.size),
-                          interpolation=cv2.INTER_AREA)
+        return cv2.resize(frame, (self.size, self.size), interpolation=cv2.INTER_AREA)
 
 
 class ScaledFloatFrame(gym.ObservationWrapper):
@@ -298,7 +299,7 @@ def wrap_deepmind(
     env = MaxAndSkipEnv(env, skip=4)
     if episode_life:
         env = EpisodicLifeEnv(env)
-    if 'FIRE' in env.unwrapped.get_action_meanings():
+    if "FIRE" in env.unwrapped.get_action_meanings():
         env = FireResetEnv(env)
     if warp_frame:
         env = WarpFrame(env)

@@ -7,12 +7,11 @@ import torch
 import torch.multiprocessing as mp
 import torch.optim as optim
 
-from rlzero.algorithms.apex.memory import PrioritizedReplayBuffer
-from rlzero.algorithms.apex.network import QNet
+from hssdrl.algos.apex.memory import PrioritizedReplayBuffer
+from hssdrl.algos.apex.network import QNet
 
 
 class Actor(mp.Process):
-
     def __init__(
         self,
         actor_id,
@@ -119,14 +118,9 @@ class Actor(mp.Process):
 
 
 class Learner:
-
-    def __init__(self,
-                 model,
-                 target_model,
-                 replay_buffer,
-                 batch_size=32,
-                 gamma=0.99,
-                 lr=1e-3):
+    def __init__(
+        self, model, target_model, replay_buffer, batch_size=32, gamma=0.99, lr=1e-3
+    ):
         self.model = model
         self.target_model = target_model
         self.replay_buffer = replay_buffer
@@ -152,12 +146,10 @@ class Learner:
         next_q_values = self.target_model(next_obs).max(1, keepdim=True)[0]
         target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
 
-        td_error = torch.abs(current_q_values -
-                             target_q_values).detach().numpy()
+        td_error = torch.abs(current_q_values - target_q_values).detach().numpy()
         self.replay_buffer.update_priorities(indices, td_error)
 
-        loss = (weights *
-                (current_q_values - target_q_values.detach())**2).mean()
+        loss = (weights * (current_q_values - target_q_values.detach()) ** 2).mean()
 
         self.optimizer.zero_grad()
         loss.backward()
