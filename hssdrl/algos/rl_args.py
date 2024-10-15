@@ -102,6 +102,48 @@ class RLArguments:
     )
 
 
+@dataclass
+class A3CArguments:
+    """Command-line argument settings for A3C algorithm."""
+
+    env_name: str = field(
+        default='CartPole-v0',
+        metadata={'help': 'Environment to train on (default: CartPole-v0)'},
+    )
+    seed: int = field(default=1, metadata={'help': 'Random seed (default: 1)'})
+
+    lr: float = field(default=0.0001,
+                      metadata={'help': 'Learning rate (default: 0.0001)'})
+    gamma: float = field(
+        default=0.99,
+        metadata={'help': 'Discount factor for rewards (default: 0.99)'})
+    gae_lambda: float = field(
+        default=1.00,
+        metadata={'help': 'Lambda parameter for GAE (default: 1.00)'})
+    entropy_coef: float = field(
+        default=0.01,
+        metadata={'help': 'Entropy term coefficient (default: 0.01)'})
+    value_loss_coef: float = field(
+        default=0.5,
+        metadata={'help': 'Value loss coefficient (default: 0.5)'})
+    max_grad_norm: float = field(
+        default=50.0,
+        metadata={'help': 'Maximum gradient norm (default: 50.0)'})
+    num_processes: int = field(
+        default=4,
+        metadata={'help': 'Number of training processes to use (default: 4)'})
+    num_steps: int = field(
+        default=20,
+        metadata={'help': 'Number of forward steps in A3C (default: 20)'})
+    max_episode_length: int = field(
+        default=1000000,
+        metadata={'help': 'Maximum length of an episode (default: 1000000)'},
+    )
+    no_shared: bool = field(
+        default=False,
+        metadata={'help': 'Use an optimizer without shared momentum.'})
+
+
 def parse_args() -> RLArguments:
     """Parses command-line arguments using argparse and returns an RLArguments
     instance.
