@@ -1,4 +1,6 @@
+import os
 import queue
+import sys
 
 import numpy as np
 import torch
@@ -7,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+sys.path.append(os.getcwd())
 from scalerl.envs.gym_env import make_gym_env
 
 
@@ -93,6 +96,11 @@ class Worker(mp.Process):
         Returns:
             int: 选择的动作。
         """
+        if obs.ndim == 1:
+            # Expand to have batch_size = 1
+            obs = np.expand_dims(obs, axis=0)
+
+        obs = torch.tensor(obs, dtype=torch.float)
         with torch.no_grad():
             logits, _ = self.local_model(obs)
         probs = F.softmax(logits, dim=-1)
