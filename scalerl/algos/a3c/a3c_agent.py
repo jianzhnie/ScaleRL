@@ -44,7 +44,6 @@ class A3CAgent:
         torch.manual_seed(self.args.seed)
         # Initialize environment
         self.env = make_gym_env(self.args.env_name)
-        self.env.seed(self.args.seed)
 
         # Observation and action dimensions
         obs_shape = self.env.observation_space.shape or self.env.observation_space.n
