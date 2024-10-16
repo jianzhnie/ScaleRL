@@ -1,6 +1,6 @@
-# HssdRL
+# ScaleRL
 
-HssdRL is a handy and simple scaling of distributed reinforcement learning framework based on Python and PyTorch
+ScaleRL is a simple and scalable distributed reinforcement learning framework based on Python and PyTorch
 
 ### Distributed RL Algorithms
 
