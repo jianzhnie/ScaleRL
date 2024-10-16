@@ -5,6 +5,7 @@ sys.path.append(os.getcwd())
 from scalerl.algos.a3c.a3c_agent import A3CAgent, A3CArguments
 
 if __name__ == '__main__':
+    os.environ['OMP_NUM_THREADS'] = '1'
     args = A3CArguments()
     print(args)
     agent = A3CAgent(args)

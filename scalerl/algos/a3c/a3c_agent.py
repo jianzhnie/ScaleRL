@@ -1,12 +1,12 @@
 from __future__ import print_function
 
-import multiprocessing as mp
 import time
 from typing import List
 
 import gymnasium as gym
 import numpy as np
 import torch
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -68,12 +68,7 @@ class A3CAgent:
                                         lr=self.args.lr)
             self.optimizer.share_memory()
         else:
-            self.optimizer = torch.optim.Adam(self.shared_model.parameters,
-                                              lr=self.args.lr)
-
-        # Create shared counter for processes
-        self.counter = mp.Value('i', 0)
-        self.lock = mp.Lock()
+            self.optimizer = None
 
     def get_value_action(self, model: nn.Module,
                          obs: np.ndarray) -> np.ndarray:
@@ -120,35 +115,45 @@ class A3CAgent:
         """Load the shared model parameters into the local model."""
         local_model.load_state_dict(shared_model.state_dict())
 
-    def ensure_shared_grads(self, model: torch.nn.Module) -> None:
+    def ensure_shared_grads(self, local_model: nn.Module,
+                            shared_model: nn.Module) -> None:
         """Ensure that gradients from the local model are copied to the shared
         model."""
-        for param, shared_param in zip(model.parameters(),
-                                       self.shared_model.parameters()):
+        for param, shared_param in zip(local_model.parameters(),
+                                       shared_model.parameters()):
             if shared_param.grad is None:
                 shared_param._grad = param.grad.clone()
 
     def train(
         self,
         worker_id: int,
-        model: nn.Module,
-        env: gym.Env,
+        local_model: nn.Module,
+        shared_model: nn.Module,
+        train_env: gym.Env,
+        optimizer: torch.optim.Optimizer = None,
+        counter: mp.Value = None,
+        lock: mp.Lock() = None,
     ) -> None:
         """Worker training function."""
         seed = self.args.seed + worker_id
         torch.manual_seed(seed)
-        model.train()
-        obs, info = env.reset(seed=seed)
+        local_model.train()
+        if optimizer is None:
+            optimizer = torch.optim.Adam(shared_model.parameters(),
+                                         lr=self.args.lr)
+
+        obs, info = train_env.reset(seed=seed)
         done = True
         episode_length = 0
         while True:
             # Sync local model with shared model
-            self._sync_with_shared_model(model, self.shared_model)
+            self._sync_with_shared_model(local_model, shared_model)
             values, log_probs, rewards, entropies = [], [], [], []
 
             for step in range(self.args.num_steps):
                 episode_length += 1
-                value, logit = self.get_value_action(model=model, obs=obs)
+                value, logit = self.get_value_action(model=local_model,
+                                                     obs=obs)
                 prob = F.softmax(logit, dim=-1)
                 log_prob = F.log_softmax(logit, dim=-1)
                 entropy = -(log_prob * prob).sum(1, keepdim=True)
@@ -161,8 +166,8 @@ class A3CAgent:
                     action.numpy())
                 done = terminal or truncated
 
-                with self.lock:
-                    self.counter.value += 1
+                with lock:
+                    counter.value += 1
 
                 if done:
                     episode_length = 0
@@ -179,7 +184,7 @@ class A3CAgent:
 
             R = torch.zeros(1, 1)
             if not done:
-                value, _ = model(obs.unsqueeze(0))
+                value, _ = local_model(obs.unsqueeze(0))
                 R = value.detach()
 
             values.append(R)
@@ -199,17 +204,23 @@ class A3CAgent:
 
             self.optimizer.zero_grad()
             (policy_loss + self.args.value_loss_coef * value_loss).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(),
+            torch.nn.utils.clip_grad_norm_(local_model.parameters(),
                                            self.args.max_grad_norm)
-            self.ensure_shared_grads(model)
+            self.ensure_shared_grads(local_model, shared_model)
             self.optimizer.step()
 
-    def test(self, worker_id: int, model: nn.Module,
-             test_env: gym.Env) -> None:
+    def test(
+        self,
+        worker_id: int,
+        local_model: nn.Module,
+        test_env: gym.Env,
+        counter: mp.Value = None,
+        lock: mp.Lock() = None,
+    ) -> None:
         """Test worker function to evaluate the performance of the agent."""
         seed = self.args.seed + worker_id
         torch.manual_seed(seed=seed)
-        model.eval()
+        local_model.eval()
         obs, info = test_env.reset(seed=seed)
         obs = torch.from_numpy(obs).float()
         reward_sum = 0
@@ -219,9 +230,9 @@ class A3CAgent:
         while True:
             episode_length += 1
             if done:
-                self._sync_with_shared_model(model, self.shared_model)
+                self._sync_with_shared_model(local_model, self.shared_model)
             with torch.no_grad():
-                value, logit = model(obs.unsqueeze(0))
+                value, logit = local_model(obs.unsqueeze(0))
             prob = F.softmax(logit, dim=-1)
             action = prob.max(1, keepdim=True)[1].numpy()
 
@@ -230,10 +241,10 @@ class A3CAgent:
             reward_sum += reward
             if done:
                 elapsed_time = time.time() - start_time
-                fps = self.counter.value / elapsed_time
+                fps = counter.value / elapsed_time
                 print(
                     f"Time {time.strftime('%Hh %Mm %Ss', time.gmtime(elapsed_time))}, "
-                    f'num steps {self.counter.value}, FPS {fps:.0f}, '
+                    f'num steps {counter.value}, FPS {fps:.0f}, '
                     f'episode reward {reward_sum}, episode length {episode_length}'
                 )
 
@@ -248,6 +259,10 @@ class A3CAgent:
         """Run the agent, spawning processes for training and testing."""
         processes: List[mp.Process] = []
 
+        # Create shared counter for processes
+        counter = mp.Value('i', 0)
+        lock = mp.Lock()
+
         local_model = ActorCritic(
             obs_dim=self.obs_dim,
             hidden_dim=self.args.hidden_dim,
@@ -255,9 +270,11 @@ class A3CAgent:
         )
 
         # Start the testing process
-        test_process = mp.Process(target=self.test,
-                                  args=(self.args.num_processes, local_model,
-                                        self.test_env))
+        test_process = mp.Process(
+            target=self.test,
+            args=(self.args.num_processes, local_model, self.test_env, counter,
+                  lock),
+        )
         test_process.start()
         processes.append(test_process)
 
@@ -269,8 +286,18 @@ class A3CAgent:
                 hidden_dim=self.args.hidden_dim,
                 action_dim=self.action_dim,
             )
-            p = mp.Process(target=self.train,
-                           args=(rank, local_model, self.train_env))
+            p = mp.Process(
+                target=self.train,
+                args=(
+                    rank,
+                    local_model,
+                    self.shared_model,
+                    self.train_env,
+                    self.optimizer,
+                    counter,
+                    lock,
+                ),
+            )
 
             p.start()
             processes.append(p)
