@@ -98,7 +98,7 @@ class ReplayBuffer:
         return len(self.memory)
 
 
-class ImpalaDQN:
+class AsyncDQN:
     """Implements the IMPALA (Importance Weighted Actor-Learner Architecture)
     with DQN.
 
@@ -422,5 +422,5 @@ class ImpalaDQN:
 
 
 if __name__ == '__main__':
-    impala_dqn = ImpalaDQN(state_dim=4, action_dim=2, num_actors=10)
+    impala_dqn = AsyncDQN(state_dim=4, action_dim=2, num_actors=10)
     impala_dqn.run()
