@@ -65,6 +65,7 @@ class LinearDecayScheduler(object):
         self.max_steps = max_steps
         self.start_value = start_value
         self.end_value = end_value
+        self.cur_value = self.start_value
 
     def step(self, step_num: int = 1) -> float:
         """Step step_num and fetch value according to following rule:
@@ -82,6 +83,7 @@ class LinearDecayScheduler(object):
         duration = (self.cur_step * 1.0) / self.max_steps
         curr_value = self.start_value * (1.0 - duration)
         value = max(curr_value, self.end_value)
+        self.cur_value = value
         return value
 
 

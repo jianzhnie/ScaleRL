@@ -1,22 +1,26 @@
 import math
 import multiprocessing as mp
+import os
 import random
+import sys
 import traceback
 from collections import deque
 from typing import Dict, List, Tuple
 
-import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+# Ensure paths are correctly set
+sys.path.append(os.getcwd())
+
 from scalerl.envs.gym_env import make_gym_env
 from scalerl.utils.logger_utils import get_logger
 from scalerl.utils.lr_scheduler import LinearDecayScheduler
 
-logger = get_logger('impala')
+logger = get_logger('async_dqn')
 
 
 def ceil_to_nearest_hundred(num: int):
@@ -31,11 +35,12 @@ class QNetwork(nn.Module):
         action_dim (int): Dimension of the action space.
     """
 
-    def __init__(self, state_dim: int, action_dim: int):
+    def __init__(self, state_dim: int, hidden_dim: int,
+                 action_dim: int) -> None:
         super(QNetwork, self).__init__()
-        self.fc1 = nn.Linear(state_dim, 64)
-        self.fc2 = nn.Linear(64, 64)
-        self.fc3 = nn.Linear(64, action_dim)
+        self.fc1 = nn.Linear(state_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, action_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the network.
@@ -115,26 +120,25 @@ class AsyncDQN:
 
     def __init__(
         self,
-        state_dim: int,
-        action_dim: int,
+        env_name: str = None,
         num_actors: int = 4,
-        max_timesteps: int = 50000,
+        hidden_dim: int = 64,
+        max_episode_size: int = 500,
         buffer_size: int = 10000,
         eps_greedy_start: float = 1.0,
         eps_greedy_end: float = 0.01,
-        eval_interval: int = 1000,
-        train_log_interval: int = 1000,
-        target_update_frequency: int = 2000,
+        eval_interval: int = 10,
+        train_log_interval: int = 10,
+        target_update_frequency: int = 10,
         double_dqn: bool = True,
         gamma: float = 0.99,
         batch_size: int = 64,
         learning_rate: float = 0.001,
         device: str = 'cpu',
     ) -> None:
-        self.state_dim = state_dim
-        self.action_dim = action_dim
+        self.env_nae = env_name
         self.num_actors = num_actors
-        self.max_timesteps = max_timesteps
+        self.max_episode_size = max_episode_size
         self.buffer_size = buffer_size
         self.eval_interval = eval_interval
         self.train_log_interval = train_log_interval
@@ -145,8 +149,20 @@ class AsyncDQN:
         self.learning_rate = learning_rate
         self.device = device
 
-        self.q_network = QNetwork(state_dim, action_dim).to(device)
-        self.target_network = QNetwork(state_dim, action_dim).to(device)
+        self.train_env = make_gym_env(env_id=env_name)
+        self.test_env = make_gym_env(env_id=env_name)
+        # Get observation and action dimensions
+        obs_shape = self.test_env.observation_space.shape or (
+            self.test_env.observation_space.n, )
+        action_shape = self.test_env.action_space.shape or (
+            self.test_env.action_space.n, )
+        self.obs_dim = int(np.prod(obs_shape))
+        self.action_dim = int(np.prod(action_shape))
+
+        self.q_network = QNetwork(self.obs_dim, hidden_dim,
+                                  self.action_dim).to(device)
+        self.target_network = QNetwork(self.obs_dim, hidden_dim,
+                                       self.action_dim).to(device)
         self.target_network.load_state_dict(self.q_network.state_dict())
         self.optimizer = optim.Adam(self.q_network.parameters(),
                                     lr=learning_rate)
@@ -155,7 +171,7 @@ class AsyncDQN:
         self.eps_greedy_scheduler = LinearDecayScheduler(
             eps_greedy_start,
             eps_greedy_end,
-            max_steps=max_timesteps * 0.9,
+            max_steps=max_episode_size,
         )
         self.eps_greedy = eps_greedy_start
 
@@ -174,7 +190,7 @@ class AsyncDQN:
         else:
             action = self.predict(obs)
 
-        self.eps_greedy = max(self.eps_greedy_scheduler.step(),
+        self.eps_greedy = max(self.eps_greedy_scheduler.cur_value,
                               self.eps_greedy_end)
 
         return action
@@ -198,7 +214,7 @@ class AsyncDQN:
         action = torch.argmax(q_values, dim=1).item()
         return action
 
-    def actor_process(self, actor_id: int, env: gym.Env, data_queue: mp.Queue,
+    def actor_process(self, actor_id: int, data_queue: mp.Queue,
                       stop_event: mp.Event) -> None:
         """Actor process that interacts with the environment and collects
         experiences.
@@ -212,13 +228,13 @@ class AsyncDQN:
         logger.info(f'Actor {actor_id} started')
         try:
             while not stop_event.is_set():
-                state, _ = env.reset()
+                state, _ = self.train_env.reset(seed=actor_id)
                 buffer: List[Tuple[np.ndarray, int, float, np.ndarray,
                                    bool]] = []
                 done = False
                 while not done:
                     action = self.get_action(state)
-                    next_state, reward, terminal, truncated, info = env.step(
+                    next_state, reward, terminal, truncated, info = self.train_env.step(
                         action)
                     done = terminal or truncated
 
@@ -228,26 +244,35 @@ class AsyncDQN:
                             for k, v in info['episode'].items()
                         }
                         episode_reward = info_item['r']
-                        episode_step = info_item['l']
+                        episode_length = info_item['l']
 
                     with self.global_step.get_lock():
                         self.global_step.value += 1
                     buffer.append((state, action, reward, next_state, done))
                     state = next_state
+
                 if buffer:
                     data_queue.put(buffer)
 
-                global_step = ceil_to_nearest_hundred(self.global_step.value)
-                if actor_id == 0 and global_step % self.train_log_interval == 0:
+                self.eps_greedy_scheduler.step()
+                if (actor_id == 0
+                        and self.global_episode.value % self.train_log_interval
+                        == 0):
                     logger.info(
-                        'Actor {}: , episode step: {}, episode reward: {}'.
-                        format(actor_id, episode_step, episode_reward), )
+                        'Actor {}: ,epidsode:{}, global step: {}, episode length: {} , episode reward: {}'
+                        .format(
+                            actor_id,
+                            self.global_episode.value,
+                            self.global_step.value,
+                            episode_length,
+                            episode_reward,
+                        ), )
 
         except Exception as e:
             logger.error(f'Exception in actor process {actor_id}: {e}')
             traceback.print_exc()
 
-    def learn(self, batch: Dict[str, np.array]) -> None:
+    def comput_loss(self, batch: Dict[str, np.array]) -> None:
         states = torch.tensor(batch['states'],
                               dtype=torch.float32).to(self.device)
         actions = (torch.tensor(batch['actions'],
@@ -288,7 +313,8 @@ class AsyncDQN:
         }
         return learn_result
 
-    def learner_process(self, data_queue: mp.Queue, stop_event: mp.Event):
+    def learner_process(self, worker_id: int, data_queue: mp.Queue,
+                        stop_event: mp.Event):
         """Learner process that trains the Q-network using experiences from the
         actors.
 
@@ -298,7 +324,7 @@ class AsyncDQN:
         """
 
         try:
-            while (self.global_step.value < self.max_timesteps
+            while (self.global_episode.value < self.max_episode_size
                    and not stop_event.is_set()):
                 try:
                     # Non-blocking with timeout
@@ -309,33 +335,36 @@ class AsyncDQN:
                 for experience in data:
                     self.replay_buffer.add(experience)
 
-                global_step = ceil_to_nearest_hundred(self.global_step.value)
-
                 if len(self.replay_buffer) >= self.batch_size:
                     batch = self.replay_buffer.sample(self.batch_size)
-                    learn_result = self.learn(batch)
+                    learn_result = self.comput_loss(batch)
 
-                    if global_step % self.target_update_frequency == 0:
+                    if self.global_episode.value % self.target_update_frequency == 0:
                         self.target_network.load_state_dict(
                             self.q_network.state_dict())
 
-                    if global_step % self.train_log_interval == 0:
+                    if self.global_episode.value % self.train_log_interval == 0:
                         logger.info(
-                            f'Step {global_step}: Train results: {learn_result}'
+                            f'Episode {self.global_episode.value}: Train results: {learn_result}'
                         )
 
-                if global_step % self.eval_interval == 0:
-                    eval_results = self.evaluate()
+                if self.global_episode.value % self.eval_interval == 0:
+                    eval_results = self.evaluate(worker_id, n_eval_episodes=5)
                     logger.info(
-                        f'Step {global_step}: Evaluation results: {eval_results}'
+                        f'Episode {self.global_episode.value}: Evaluation results: {eval_results}'
                     )
+
+                with self.global_episode.get_lock():
+                    self.global_episode.value += 1
 
         except Exception as e:
             logger.error(f'Exception in learner process: {e}')
         finally:
             logger.info('Learner process is shutting down')
 
-    def evaluate(self, n_eval_episodes: int = 5) -> dict[str, float]:
+    def evaluate(self,
+                 worker_id: int,
+                 n_eval_episodes: int = 5) -> dict[str, float]:
         """Evaluate the model on the test environment.
 
         Args:
@@ -344,17 +373,16 @@ class AsyncDQN:
         Returns:
             dict[str, float]: Evaluation results.
         """
-        test_env = make_gym_env(env_id='CartPole-v0')
         eval_rewards = []
         eval_steps = []
         for _ in range(n_eval_episodes):
-            obs, info = test_env.reset()
+            obs, info = self.test_env.reset(seed=worker_id + 42)
             done = False
             episode_reward = 0.0
-            episode_step = 0
+            episode_length = 0
             while not done:
                 action = self.predict(obs)
-                next_obs, reward, terminated, truncated, info = test_env.step(
+                next_obs, reward, terminated, truncated, info = self.test_env.step(
                     action)
                 obs = next_obs
                 done = terminated or truncated
@@ -364,11 +392,9 @@ class AsyncDQN:
                         for k, v in info['episode'].items()
                     }
                     episode_reward = info_item['r']
-                    episode_step = info_item['l']
-                if done:
-                    test_env.reset()
+                    episode_length = info_item['l']
             eval_rewards.append(episode_reward)
-            eval_steps.append(episode_step)
+            eval_steps.append(episode_length)
 
         return {
             'reward_mean': np.mean(eval_rewards),
@@ -382,21 +408,25 @@ class AsyncDQN:
 
         self.replay_buffer = ReplayBuffer(self.buffer_size)
         self.global_step = mp.Value('i', 0)
-        self.data_queue = mp.Queue(maxsize=500)
+        self.global_episode = mp.Value('i', 0)
+        self.globale_episode_rerturn = mp.Value('d', 0)
+        self.data_queue = mp.Queue()
+        self.results_queue = mp.Queue()
 
         stop_event = mp.Event()
         actor_processes = []
         for actor_id in range(self.num_actors):
-            train_env = make_gym_env(env_id='CartPole-v0')
             actor = mp.Process(
                 target=self.actor_process,
-                args=(actor_id, train_env, self.data_queue, stop_event),
+                args=(actor_id, self.data_queue, stop_event),
             )
             actor.start()
             actor_processes.append(actor)
 
-        learner = mp.Process(target=self.learner_process,
-                             args=(self.data_queue, stop_event))
+        learner = mp.Process(
+            target=self.learner_process,
+            args=(self.num_actors, self.data_queue, stop_event),
+        )
         learner.start()
 
         try:
@@ -422,5 +452,5 @@ class AsyncDQN:
 
 
 if __name__ == '__main__':
-    impala_dqn = AsyncDQN(state_dim=4, action_dim=2, num_actors=10)
+    impala_dqn = AsyncDQN(env_name='CartPole-v0', num_actors=10)
     impala_dqn.run()
