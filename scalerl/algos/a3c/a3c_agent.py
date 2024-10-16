@@ -44,6 +44,8 @@ class A3CAgent:
         torch.manual_seed(self.args.seed)
         # Initialize environment
         self.env = make_gym_env(self.args.env_name)
+        self.train_env = make_gym_env(env_id=self.args.env_name)
+        self.test_env = make_gym_env(env_id=self.args.env_name)
 
         # Observation and action dimensions
         obs_shape = self.env.observation_space.shape or self.env.observation_space.n
@@ -133,9 +135,10 @@ class A3CAgent:
         env: gym.Env,
     ) -> None:
         """Worker training function."""
-        torch.manual_seed(self.args.seed + worker_id)
+        seed = self.args.seed + worker_id
+        torch.manual_seed(seed)
         model.train()
-        obs, info = env.reset()
+        obs, info = env.reset(seed=seed)
         done = True
         episode_length = 0
         while True:
@@ -204,9 +207,10 @@ class A3CAgent:
     def test(self, worker_id: int, model: nn.Module,
              test_env: gym.Env) -> None:
         """Test worker function to evaluate the performance of the agent."""
-        torch.manual_seed(self.args.seed + worker_id)
+        seed = self.args.seed + worker_id
+        torch.manual_seed(seed=seed)
         model.eval()
-        obs, info = test_env.reset()
+        obs, info = test_env.reset(seed=seed)
         obs = torch.from_numpy(obs).float()
         reward_sum = 0
         done = False
@@ -236,23 +240,24 @@ class A3CAgent:
                 reward_sum = 0
                 episode_length = 0
                 obs, info = self.env.reset()
+                time.sleep(6)
+
             obs = torch.from_numpy(obs).float()
 
     def run(self) -> None:
         """Run the agent, spawning processes for training and testing."""
         processes: List[mp.Process] = []
 
-        model = ActorCritic(
+        local_model = ActorCritic(
             obs_dim=self.obs_dim,
             hidden_dim=self.args.hidden_dim,
             action_dim=self.action_dim,
         )
-        test_env = make_gym_env(env_id=self.args.env_name)
 
         # Start the testing process
         test_process = mp.Process(target=self.test,
-                                  args=(self.args.num_processes, model,
-                                        test_env))
+                                  args=(self.args.num_processes, local_model,
+                                        self.test_env))
         test_process.start()
         processes.append(test_process)
 
@@ -264,9 +269,8 @@ class A3CAgent:
                 hidden_dim=self.args.hidden_dim,
                 action_dim=self.action_dim,
             )
-            train_env = make_gym_env(env_id=self.args.env_name)
             p = mp.Process(target=self.train,
-                           args=(rank, local_model, train_env))
+                           args=(rank, local_model, self.train_env))
 
             p.start()
             processes.append(p)
