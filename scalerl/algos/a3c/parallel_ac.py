@@ -1,42 +1,13 @@
 import queue
 
-import gymnasium as gym
 import numpy as np
 import torch
 import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from gymnasium.wrappers import RecordEpisodeStatistics, RecordVideo
 
-
-def make_gym_env(
-    env_id: str,
-    seed: int = 42,
-    capture_video: bool = False,
-    save_video_dir: str = 'work_dir',
-    save_video_name: str = 'test',
-) -> RecordEpisodeStatistics:
-    """创建并封装Gym环境，包含必要的封装器。
-
-    Args:
-        env_id (str): 环境ID。
-        seed (int): 随机种子。
-        capture_video (bool): 是否录制视频。
-        save_video_dir (str): 保存视频的目录。
-        save_video_name (str): 保存视频的文件名。
-
-    Returns:
-        RecordEpisodeStatistics: 封装后的环境。
-    """
-    if capture_video:
-        env = gym.make(env_id, render_mode='rgb_array')
-        env = RecordVideo(env, f'{save_video_dir}/{save_video_name}')
-    else:
-        env = gym.make(env_id)
-    env = RecordEpisodeStatistics(env)
-    env.reset(seed=seed)  # 正确的设置随机种子方式
-    return env
+from scalerl.envs.gym_env import make_gym_env
 
 
 class ActorCriticNet(nn.Module):
@@ -59,8 +30,7 @@ class ActorCriticNet(nn.Module):
         self.actor_linear = nn.Linear(hidden_dim, action_dim)
         self.critic_linear = nn.Linear(hidden_dim, 1)
 
-    def get_action_value(
-            self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """返回动作的logits和状态值。
 
         Args:
@@ -114,20 +84,17 @@ class Worker(mp.Process):
         self.max_episode_size = max_episode_size
         self.gamma = gamma
 
-    def get_action(self, obs: np.ndarray) -> int:
+    def get_action(self, obs: torch.Tensor) -> int:
         """选择动作并返回整型动作。
 
         Args:
-            obs (np.ndarray): 观察值。
+            obs (torch.Tensor): 观察值。
 
         Returns:
             int: 选择的动作。
         """
-        if obs.ndim == 1:
-            obs = np.expand_dims(obs, axis=0)
-        obs = torch.tensor(obs, dtype=torch.float32)
         with torch.no_grad():
-            logits, _ = self.local_model.get_action_value(obs)
+            logits, _ = self.local_model(obs)
         probs = F.softmax(logits, dim=-1)
         action_dist = torch.distributions.Categorical(probs)
         action = action_dist.sample()
@@ -154,8 +121,8 @@ class Worker(mp.Process):
         dones = torch.tensor(np.array(transition_dict['dones']),
                              dtype=torch.float32).view(-1, 1)
 
-        curr_policy, curr_value = self.local_model.get_action_value(obs)
-        _, next_value = self.local_model.get_action_value(next_obs)
+        curr_policy, curr_value = self.local_model(obs)
+        _, next_value = self.local_model(next_obs)
         curr_probs = F.softmax(curr_policy, dim=-1)
 
         td_target = rewards + self.gamma * next_value * (1 - dones)
@@ -207,7 +174,7 @@ class Worker(mp.Process):
                     self.local_model.parameters(),
                     self.share_model.parameters(),
             ):
-                global_param.grad = local_param.grad
+                global_param._grad = local_param.grad
 
             self.optimizer.step()
 
