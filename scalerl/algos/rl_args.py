@@ -112,6 +112,8 @@ class A3CArguments:
     )
     seed: int = field(default=1, metadata={'help': 'Random seed (default: 1)'})
 
+    hidden_dim: int = field(
+        default=256, metadata={'help': 'Hidden dimension (default: 256)'})
     lr: float = field(default=0.0001,
                       metadata={'help': 'Learning rate (default: 0.0001)'})
     gamma: float = field(

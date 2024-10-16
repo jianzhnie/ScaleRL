@@ -11,8 +11,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from gymnasium.wrappers import RecordEpisodeStatistics
 
+from scalerl.envs.gym_env import make_gym_env
 from scalerl.utils.logger_utils import get_logger
 from scalerl.utils.lr_scheduler import LinearDecayScheduler
 
@@ -21,36 +21,6 @@ logger = get_logger('impala')
 
 def ceil_to_nearest_hundred(num: int):
     return math.ceil(num / 100) * 100
-
-
-def make_env(
-    env_id: str,
-    seed: int = 42,
-    capture_video: bool = False,
-    save_video_dir: str = 'work_dir',
-    save_video_name: str = 'test',
-) -> RecordEpisodeStatistics:
-    """Create and wrap the environment with necessary wrappers.
-
-    Args:
-        env_id (str): ID of the environment.
-        seed (int): Random seed.
-        capture_video (bool): Whether to capture video.
-        save_video_dir (str): Directory to save video.
-        save_video_name (str): Name of the video file.
-
-    Returns:
-        RecordEpisodeStatistics: Wrapped environment.
-    """
-    if capture_video:
-        env = gym.make(env_id, render_mode='rgb_array')
-        env = gym.wrappers.RecordVideo(env,
-                                       f'{save_video_dir}/{save_video_name}')
-    else:
-        env = gym.make(env_id)
-    env = gym.wrappers.RecordEpisodeStatistics(env)
-    env.action_space.seed(seed)
-    return env
 
 
 class QNetwork(nn.Module):
@@ -374,7 +344,7 @@ class ImpalaDQN:
         Returns:
             dict[str, float]: Evaluation results.
         """
-        test_env = make_env(env_id='CartPole-v0')
+        test_env = make_gym_env(env_id='CartPole-v0')
         eval_rewards = []
         eval_steps = []
         for _ in range(n_eval_episodes):
@@ -417,7 +387,7 @@ class ImpalaDQN:
         stop_event = mp.Event()
         actor_processes = []
         for actor_id in range(self.num_actors):
-            train_env = make_env(env_id='CartPole-v0')
+            train_env = make_gym_env(env_id='CartPole-v0')
             actor = mp.Process(
                 target=self.actor_process,
                 args=(actor_id, train_env, self.data_queue, stop_event),

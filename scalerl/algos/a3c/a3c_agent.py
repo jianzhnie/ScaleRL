@@ -1,11 +1,10 @@
 from __future__ import print_function
 
 import multiprocessing as mp
-import os
 import time
-from collections import deque
-from typing import Deque, List
+from typing import List
 
+import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
@@ -42,19 +41,15 @@ class A3CAgent:
         """Initialize the A3CAgent with shared model, environment and
         optimizer."""
         self.args = args
-        os.environ['OMP_NUM_THREADS'] = '1'
-        os.environ['CUDA_VISIBLE_DEVICES'] = ''
-
         torch.manual_seed(self.args.seed)
-
         # Initialize environment
         self.env = make_gym_env(self.args.env_name)
         self.env.seed(self.args.seed)
 
         # Observation and action dimensions
-        state_shape = self.env.observation_space.shape or self.env.observation_space.n
+        obs_shape = self.env.observation_space.shape or self.env.observation_space.n
         action_shape = self.env.action_space.shape or self.env.action_space.n
-        self.obs_dim = int(np.prod(state_shape))
+        self.obs_dim = int(np.prod(obs_shape))
         self.action_dim = int(np.prod(action_shape))
 
         # Initialize shared model
@@ -63,8 +58,8 @@ class A3CAgent:
             hidden_dim=self.args.hidden_dim,
             action_dim=self.action_dim,
         )
-        self.shared_model.share_memory(
-        )  # Ensure model is shared across processes
+        self.shared_model.share_memory()
+        # Ensure model is shared across processes
 
         # Initialize optimizer
         if not self.args.no_shared:
@@ -79,9 +74,50 @@ class A3CAgent:
         self.counter = mp.Value('i', 0)
         self.lock = mp.Lock()
 
-    def _sync_with_shared_model(self, local_model: torch.nn.Module):
+    def get_value_action(self, model: nn.Module,
+                         obs: np.ndarray) -> np.ndarray:
+        """Get action from the actor network.
+
+        Args:
+            obs (np.ndarray): Current observation.
+
+        Returns:
+            np.ndarray: Selected action.
+        """
+        # epsilon greedy policy
+        if obs.ndim == 1:
+            # Expand to have batch_size = 1
+            obs = np.expand_dims(obs, axis=0)
+
+        obs = torch.tensor(obs, dtype=torch.float)
+        with torch.no_grad():
+            value, logit = model(obs)
+        return value, logit
+
+    def predict(self, model: nn.Module, obs: np.ndarray) -> int:
+        """Predict an action given an observation.
+
+        Args:
+            obs (np.ndarray): Current observation.
+
+        Returns:
+            int: Selected action.
+        """
+        if obs.ndim == 1:
+            # Expand to have batch_size = 1
+            obs = np.expand_dims(obs, axis=0)
+
+        obs = torch.tensor(obs, dtype=torch.float)
+        with torch.no_grad():
+            value, logit = model(obs)
+        prob = F.softmax(logit, dim=-1)
+        action = prob.max(1, keepdim=True)[1].numpy()
+        return action
+
+    def _sync_with_shared_model(self, local_model: nn.Module,
+                                shared_model: nn.Module):
         """Load the shared model parameters into the local model."""
-        local_model.load_state_dict(self.shared_model.state_dict())
+        local_model.load_state_dict(shared_model.state_dict())
 
     def ensure_shared_grads(self, model: torch.nn.Module) -> None:
         """Ensure that gradients from the local model are copied to the shared
@@ -91,31 +127,26 @@ class A3CAgent:
             if shared_param.grad is None:
                 shared_param._grad = param.grad.clone()
 
-    def train(self, worker_id: int) -> None:
+    def train(
+        self,
+        worker_id: int,
+        model: nn.Module,
+        env: gym.Env,
+    ) -> None:
         """Worker training function."""
         torch.manual_seed(self.args.seed + worker_id)
-
-        # Local model for the worker
-        model = ActorCritic(
-            obs_dim=self.obs_dim,
-            hidden_dim=self.args.hidden_dim,
-            action_dim=self.action_dim,
-        )
         model.train()
-
-        state, info = self.env.reset()
-        state = torch.from_numpy(state).float()
+        obs, info = env.reset()
         done = True
         episode_length = 0
-
         while True:
-            self._sync_with_shared_model(
-                model)  # Sync local model with shared model
+            # Sync local model with shared model
+            self._sync_with_shared_model(model, self.shared_model)
             values, log_probs, rewards, entropies = [], [], [], []
 
             for step in range(self.args.num_steps):
                 episode_length += 1
-                value, logit = model(state.unsqueeze(0))
+                value, logit = self.get_value_action(model=model, obs=obs)
                 prob = F.softmax(logit, dim=-1)
                 log_prob = F.log_softmax(logit, dim=-1)
                 entropy = -(log_prob * prob).sum(1, keepdim=True)
@@ -124,19 +155,18 @@ class A3CAgent:
                 action = prob.multinomial(num_samples=1).detach()
                 log_prob = log_prob.gather(1, action)
 
-                state, reward, terminal, truncated, info = self.env.step(
+                obs, reward, terminal, truncated, info = self.env.step(
                     action.numpy())
                 done = terminal or truncated
-                reward = max(min(reward, 1), -1)
 
                 with self.lock:
                     self.counter.value += 1
 
                 if done:
                     episode_length = 0
-                    state, info = self.env.reset()
+                    obs, info = self.env.reset()
 
-                state = torch.from_numpy(state).float()
+                obs = torch.from_numpy(obs).float()
 
                 values.append(value)
                 log_probs.append(log_prob)
@@ -147,7 +177,7 @@ class A3CAgent:
 
             R = torch.zeros(1, 1)
             if not done:
-                value, _ = model(state.unsqueeze(0))
+                value, _ = model(obs.unsqueeze(0))
                 R = value.detach()
 
             values.append(R)
@@ -172,45 +202,29 @@ class A3CAgent:
             self.ensure_shared_grads(model)
             self.optimizer.step()
 
-    def test(self, rank: int) -> None:
+    def test(self, worker_id: int, model: nn.Module,
+             test_env: gym.Env) -> None:
         """Test worker function to evaluate the performance of the agent."""
-        torch.manual_seed(self.args.seed + rank)
-
-        model = ActorCritic(
-            obs_dim=self.obs_dim,
-            hidden_dim=self.args.hidden_dim,
-            action_dim=self.action_dim,
-        )
+        torch.manual_seed(self.args.seed + worker_id)
         model.eval()
-
-        state, info = self.env.reset()
-        state = torch.from_numpy(state).float()
+        obs, info = test_env.reset()
+        obs = torch.from_numpy(obs).float()
         reward_sum = 0
-        done = True
+        done = False
         episode_length = 0
         start_time = time.time()
-
-        actions: Deque[int] = deque(maxlen=100)
-
         while True:
             episode_length += 1
-
             if done:
-                self._sync_with_shared_model(model)
-
+                self._sync_with_shared_model(model, self.shared_model)
             with torch.no_grad():
-                value, logit = model(state.unsqueeze(0))
+                value, logit = model(obs.unsqueeze(0))
             prob = F.softmax(logit, dim=-1)
             action = prob.max(1, keepdim=True)[1].numpy()
 
-            state, reward, terminal, truncated, _ = self.env.step(action[0, 0])
+            obs, reward, terminal, truncated, _ = self.env.step(action)
             done = terminal or truncated
             reward_sum += reward
-
-            actions.append(action[0, 0])
-            if actions.count(actions[0]) == actions.maxlen:
-                done = True
-
             if done:
                 elapsed_time = time.time() - start_time
                 fps = self.counter.value / elapsed_time
@@ -222,26 +236,39 @@ class A3CAgent:
 
                 reward_sum = 0
                 episode_length = 0
-                actions.clear()
-                state, info = self.env.reset()
-
-                time.sleep(60)
-
-            state = torch.from_numpy(state).float()
+                obs, info = self.env.reset()
+            obs = torch.from_numpy(obs).float()
 
     def run(self) -> None:
         """Run the agent, spawning processes for training and testing."""
         processes: List[mp.Process] = []
 
+        model = ActorCritic(
+            obs_dim=self.obs_dim,
+            hidden_dim=self.args.hidden_dim,
+            action_dim=self.action_dim,
+        )
+        test_env = make_gym_env(env_id=self.args.env_name)
+
         # Start the testing process
         test_process = mp.Process(target=self.test,
-                                  args=(self.args.num_processes, ))
+                                  args=(self.args.num_processes, model,
+                                        test_env))
         test_process.start()
         processes.append(test_process)
 
         # Start training processes
         for rank in range(self.args.num_processes):
-            p = mp.Process(target=self.train, args=(rank, ))
+            # Local model for the worker
+            local_model = ActorCritic(
+                obs_dim=self.obs_dim,
+                hidden_dim=self.args.hidden_dim,
+                action_dim=self.action_dim,
+            )
+            train_env = make_gym_env(env_id=self.args.env_name)
+            p = mp.Process(target=self.train,
+                           args=(rank, local_model, train_env))
+
             p.start()
             processes.append(p)
 
