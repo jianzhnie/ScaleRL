@@ -3,9 +3,9 @@ import multiprocessing as mp
 import gymnasium as gym
 import torch
 
-from hssdrl.algos.apex.memory import PrioritizedReplayBuffer
-from hssdrl.algos.apex.network import QNet
-from hssdrl.algos.apex.worker import Actor, Learner
+from scalerl.algos.apex.memory import PrioritizedReplayBuffer
+from scalerl.algos.apex.network import QNet
+from scalerl.algos.apex.worker import Actor, Learner
 
 
 class ApexTrainer(object):

@@ -13,8 +13,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from gymnasium.wrappers import RecordEpisodeStatistics
 
-from hssdrl.utils.logger_utils import get_logger
-from hssdrl.utils.lr_scheduler import LinearDecayScheduler
+from scalerl.utils.logger_utils import get_logger
+from scalerl.utils.lr_scheduler import LinearDecayScheduler
 
 logger = get_logger('impala')
 

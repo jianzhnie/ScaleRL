@@ -7,8 +7,8 @@ import torch
 import torch.multiprocessing as mp
 import torch.optim as optim
 
-from hssdrl.algos.apex.memory import PrioritizedReplayBuffer
-from hssdrl.algos.apex.network import QNet
+from scalerl.algos.apex.memory import PrioritizedReplayBuffer
+from scalerl.algos.apex.network import QNet
 
 
 class Actor(mp.Process):

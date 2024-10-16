@@ -9,16 +9,16 @@ import torch
 from torch import multiprocessing as mp
 from torch import nn
 
-from hssdrl.algos.impala.loss_fn import (compute_baseline_loss,
-                                         compute_entropy_loss,
-                                         compute_policy_gradient_loss)
-from hssdrl.algos.impala.vtrace import from_logits
-from hssdrl.algos.rl_args import RLArguments
-from hssdrl.envs.atari_wrapper import wrap_deepmind
-from hssdrl.envs.torch_envwrapper import TorchEnvWrapper
-from hssdrl.models.atari_model import AtariNet
-from hssdrl.utils.logger_utils import get_logger
-from hssdrl.utils.profile import Timings
+from scalerl.algos.impala.loss_fn import (compute_baseline_loss,
+                                          compute_entropy_loss,
+                                          compute_policy_gradient_loss)
+from scalerl.algos.impala.vtrace import from_logits
+from scalerl.algos.rl_args import RLArguments
+from scalerl.envs.atari_wrapper import wrap_deepmind
+from scalerl.envs.torch_envwrapper import TorchEnvWrapper
+from scalerl.models.atari_model import AtariNet
+from scalerl.utils.logger_utils import get_logger
+from scalerl.utils.profile import Timings
 
 logger = get_logger('impala_atari')
 
