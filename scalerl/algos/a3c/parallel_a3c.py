@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import os
+import random
 import sys
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -15,7 +16,6 @@ sys.path.append(os.getcwd())
 
 # Custom imports from project
 from scalerl.algos.a3c.share_optim import SharedAdam
-from scalerl.algos.rl_args import A3CArguments
 from scalerl.envs.gym_env import make_gym_env
 from scalerl.utils.logger_utils import get_logger
 from scalerl.utils.utils import get_device
@@ -70,7 +70,7 @@ class ParallelA3C:
         self,
         env_name: str = 'CartPole-v0',
         num_workers: int = 4,
-        hidden_dim: int = 128,
+        hidden_dim: int = 8,
         max_episode_size: int = 1000,
         learning_rate: float = 0.001,
         gamma: float = 0.99,
@@ -79,7 +79,7 @@ class ParallelA3C:
         value_loss_coef: float = 0.5,
         max_grad_norm: float = 50.0,
         rollout_steps: int = 50,
-        no_shared: bool = False,
+        no_shared: bool = True,
         eval_interval: int = 10,
         train_log_interval: int = 10,
         target_update_frequency: int = 10,
@@ -91,6 +91,7 @@ class ParallelA3C:
         Args:
             args (A3CArguments): Hyperparameters and arguments for A3C.
         """
+        self.seed = random.randint(0, 100)
         self.env_name = env_name
         self.num_workers = num_workers
         self.hidden_dim = hidden_dim
@@ -132,6 +133,7 @@ class ParallelA3C:
                                           self.action_dim).to(self.device)
         self.shared_model = ActorCriticNet(self.obs_dim, self.hidden_dim,
                                            self.action_dim).to(self.device)
+        self.local_model.share_memory()
         self.shared_model.share_memory(
         )  # Share the model memory across processes
 
@@ -156,7 +158,7 @@ class ParallelA3C:
         if obs.ndim == 1:
             obs = np.expand_dims(obs, axis=0)  # Ensure batch size is 1
 
-        obs = torch.tensor(obs, dtype=torch.float32)
+        obs = torch.tensor(obs, dtype=torch.float, device=self.device)
         with torch.no_grad():
             logits, _ = self.local_model(obs)
         probs = F.softmax(logits, dim=-1)
@@ -176,7 +178,7 @@ class ParallelA3C:
         if obs.ndim == 1:
             obs = np.expand_dims(obs, axis=0)  # Ensure batch size is 1
 
-        obs = torch.tensor(obs, dtype=torch.float32)
+        obs = torch.tensor(obs, dtype=torch.float, device=self.device)
         with torch.no_grad():
             logits, _ = self.local_model(obs)
         probs = F.softmax(logits, dim=-1)
@@ -191,7 +193,7 @@ class ParallelA3C:
             local_model (nn.Module): Local model.
             shared_model (nn.Module): Shared global model.
         """
-        local_model.load_state_dict(shared_model.state_dict())
+        local_model.load_state_dict(shared_model.state_dict(), strict=False)
 
     def ensure_shared_grads(self, local_model: nn.Module,
                             shared_model: nn.Module) -> None:
@@ -253,10 +255,11 @@ class ParallelA3C:
         return total_loss
 
     def train(
-        self,
-        worker_id: int,
-        optimizer: Optional[torch.optim.Optimizer] = None,
-        global_episode: Optional[mp.Value] = None,
+            self,
+            worker_id: int,
+            optimizer: Optional[torch.optim.Optimizer] = None,
+            global_episode: Optional[mp.Value] = None,
+            mp_lock: mp.Lock = mp.Lock(),
     ) -> None:
         """Train the model using asynchronous advantage actor-critic.
 
@@ -279,7 +282,9 @@ class ParallelA3C:
                                          lr=self.learning_rate)
 
         # Sync local model with the shared model
-        self.sync_with_shared_model(self.local_model, self.shared_model)
+
+        with mp_lock:
+            self.sync_with_shared_model(self.local_model, self.shared_model)
 
         while global_episode.value < self.max_episode_size:
             transition_dict = {
@@ -380,11 +385,8 @@ class ParallelA3C:
         for worker_id in range(self.num_workers):
             p = mp.Process(
                 target=self.train,
-                args=(
-                    worker_id,
-                    self.optimizer,
-                    self.global_episode,
-                ),
+                args=(worker_id, self.optimizer, self.global_episode,
+                      mp.Lock()),
             )
             p.start()
             processes.append(p)
@@ -395,6 +397,5 @@ class ParallelA3C:
 
 
 if __name__ == '__main__':
-    args = A3CArguments()
-    a3c = ParallelA3C(args)
+    a3c = ParallelA3C(num_workers=4)
     a3c.run()
