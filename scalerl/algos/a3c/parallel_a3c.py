@@ -60,7 +60,7 @@ class ActorCriticNet(nn.Module):
         return logits, value
 
 
-class A3CTrainer:
+class ParallelA3C:
     """A3C Trainer Class to handle training and testing processes."""
 
     def __init__(self, args: A3CArguments) -> None:
@@ -338,5 +338,5 @@ class A3CTrainer:
 
 if __name__ == '__main__':
     args = A3CArguments()
-    a3c = A3CTrainer(args)
+    a3c = ParallelA3C(args)
     a3c.run()

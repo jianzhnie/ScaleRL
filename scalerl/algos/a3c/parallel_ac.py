@@ -48,7 +48,7 @@ class ActorCriticNet(nn.Module):
         return logits, value
 
 
-class Worker(mp.Process):
+class ParallelAC(mp.Process):
 
     def __init__(
         self,
@@ -77,7 +77,7 @@ class Worker(mp.Process):
             max_episode_size (int): 最大回合数。
             gamma (float): 折扣因子。
         """
-        super(Worker, self).__init__()
+        super(ParallelAC, self).__init__()
         self.local_model = ActorCriticNet(obs_dim, hidden_dim, action_dim)
         self.share_model = share_model
         self.optimizer = optimizer
@@ -212,7 +212,7 @@ if __name__ == '__main__':
 
     num_workers = 4
     workers = [
-        Worker(
+        ParallelAC(
             share_model,
             optimizer,
             obs_dim,
