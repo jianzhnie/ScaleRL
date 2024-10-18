@@ -1,6 +1,8 @@
 import math
 import multiprocessing as mp
+import os
 import random
+import sys
 import traceback
 from collections import deque
 from typing import Dict, List, Tuple
@@ -11,9 +13,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from gymnasium.wrappers import RecordEpisodeStatistics
-from hssdrl.utils.logger_utils import get_logger
-from hssdrl.utils.lr_scheduler import LinearDecayScheduler
+
+# Ensure paths are correctly set
+sys.path.append(os.getcwd())
+from scalerl.envs.gym_env import make_gym_env
+from scalerl.utils.logger_utils import get_logger
+from scalerl.utils.lr_scheduler import LinearDecayScheduler
 
 logger = get_logger('impala')
 
@@ -22,55 +27,25 @@ def ceil_to_nearest_hundred(num: int):
     return math.ceil(num / 100) * 100
 
 
-def make_env(
-    env_id: str,
-    seed: int = 42,
-    capture_video: bool = False,
-    save_video_dir: str = 'work_dir',
-    save_video_name: str = 'test',
-) -> RecordEpisodeStatistics:
-    """Create and wrap the environment with necessary wrappers.
-
-    Args:
-        env_id (str): ID of the environment.
-        seed (int): Random seed.
-        capture_video (bool): Whether to capture video.
-        save_video_dir (str): Directory to save video.
-        save_video_name (str): Name of the video file.
-
-    Returns:
-        RecordEpisodeStatistics: Wrapped environment.
-    """
-    if capture_video:
-        env = gym.make(env_id, render_mode='rgb_array')
-        env = gym.wrappers.RecordVideo(env,
-                                       f'{save_video_dir}/{save_video_name}')
-    else:
-        env = gym.make(env_id)
-    env = gym.wrappers.RecordEpisodeStatistics(env)
-    env.action_space.seed(seed)
-    return env
-
-
 class QNetwork(nn.Module):
     """A simple feedforward neural network for Q-learning.
 
     Args:
-        state_dim (int): Dimension of the state space.
+        obs_dim (int): Dimension of the obs space.
         action_dim (int): Dimension of the action space.
     """
 
-    def __init__(self, state_dim: int, action_dim: int):
+    def __init__(self, obs_dim: int, hidden_dim: int, action_dim: int) -> None:
         super(QNetwork, self).__init__()
-        self.fc1 = nn.Linear(state_dim, 64)
-        self.fc2 = nn.Linear(64, 64)
-        self.fc3 = nn.Linear(64, action_dim)
+        self.fc1 = nn.Linear(obs_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, action_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the network.
 
         Args:
-            x (torch.Tensor): Input tensor representing the state.
+            x (torch.Tensor): Input tensor representing the obs.
 
         Returns:
             torch.Tensor: Output tensor representing the Q-values for each action.
@@ -94,7 +69,7 @@ class ReplayBuffer:
         """Add an experience to the buffer.
 
         Args:
-            experience (Tuple[np.ndarray, int, float, np.ndarray, bool]): A tuple containing (state, action, reward, next_state, done).
+            experience (Tuple[np.ndarray, int, float, np.ndarray, bool]): A tuple containing (obs, action, reward, next_obs, done).
         """
         self.memory.append(experience)
 
@@ -105,15 +80,15 @@ class ReplayBuffer:
             batch_size (int): Number of experiences to sample.
 
         Returns:
-            Dict[str, np.ndarray]: A dictionary containing states, actions, rewards, next_states, and dones.
+            Dict[str, np.ndarray]: A dictionary containing obs, actions, rewards, next_obs, and dones.
         """
         experiences = random.sample(self.memory, k=batch_size)
-        states, actions, rewards, next_states, dones = zip(*experiences)
+        obs, actions, rewards, next_obs, dones = zip(*experiences)
         batch = dict(
-            states=np.array(states),
+            obs=np.array(obs),
             actions=np.array(actions),
             rewards=np.array(rewards),
-            next_states=np.array(next_states),
+            next_obs=np.array(next_obs),
             dones=np.array(dones),
         )
         return batch
@@ -132,7 +107,7 @@ class ImpalaDQN:
     with DQN.
 
     Args:
-        state_dim (int): Dimension of the state space.
+        obs_dim (int): Dimension of the obs space.
         action_dim (int): Dimension of the action space.
         num_actors (int): Number of actor processes.
         buffer_size (int): Maximum size of the replay buffer.
@@ -144,9 +119,9 @@ class ImpalaDQN:
 
     def __init__(
         self,
-        state_dim: int,
-        action_dim: int,
+        env_name: str = None,
         num_actors: int = 4,
+        hidden_dim: int = 64,
         max_timesteps: int = 50000,
         buffer_size: int = 10000,
         eps_greedy_start: float = 1.0,
@@ -160,8 +135,6 @@ class ImpalaDQN:
         learning_rate: float = 0.001,
         device: str = 'cpu',
     ) -> None:
-        self.state_dim = state_dim
-        self.action_dim = action_dim
         self.num_actors = num_actors
         self.max_timesteps = max_timesteps
         self.buffer_size = buffer_size
@@ -173,9 +146,20 @@ class ImpalaDQN:
         self.batch_size = batch_size
         self.learning_rate = learning_rate
         self.device = device
+        self.train_env = make_gym_env(env_id=env_name)
+        self.test_env = make_gym_env(env_id=env_name)
+        # Get observation and action dimensions
+        obs_shape = self.test_env.observation_space.shape or (
+            self.test_env.observation_space.n, )
+        action_shape = self.test_env.action_space.shape or (
+            self.test_env.action_space.n, )
+        self.obs_dim = int(np.prod(obs_shape))
+        self.action_dim = int(np.prod(action_shape))
 
-        self.q_network = QNetwork(state_dim, action_dim).to(device)
-        self.target_network = QNetwork(state_dim, action_dim).to(device)
+        self.q_network = QNetwork(self.obs_dim, hidden_dim,
+                                  self.action_dim).to(device)
+        self.target_network = QNetwork(self.obs_dim, hidden_dim,
+                                       self.action_dim).to(device)
         self.target_network.load_state_dict(self.q_network.state_dict())
         self.optimizer = optim.Adam(self.q_network.parameters(),
                                     lr=learning_rate)
@@ -241,13 +225,13 @@ class ImpalaDQN:
         logger.info(f'Actor {actor_id} started')
         try:
             while not stop_event.is_set():
-                state, _ = env.reset()
+                obs, _ = self.train_env.reset(seed=actor_id)
                 buffer: List[Tuple[np.ndarray, int, float, np.ndarray,
                                    bool]] = []
                 done = False
                 while not done:
-                    action = self.get_action(state)
-                    next_state, reward, terminal, truncated, info = env.step(
+                    action = self.get_action(obs)
+                    next_obs, reward, terminal, truncated, info = self.train_env.step(
                         action)
                     done = terminal or truncated
 
@@ -261,8 +245,8 @@ class ImpalaDQN:
 
                     with self.global_step.get_lock():
                         self.global_step.value += 1
-                    buffer.append((state, action, reward, next_state, done))
-                    state = next_state
+                    buffer.append((obs, action, reward, next_obs, done))
+                    obs = next_obs
                 if buffer:
                     data_queue.put(buffer)
 
@@ -277,30 +261,29 @@ class ImpalaDQN:
             traceback.print_exc()
 
     def learn(self, batch: Dict[str, np.array]) -> None:
-        states = torch.tensor(batch['states'],
-                              dtype=torch.float32).to(self.device)
+        obs = torch.tensor(batch['obs'], dtype=torch.float32).to(self.device)
         actions = (torch.tensor(batch['actions'],
                                 dtype=torch.long).unsqueeze(1).to(self.device))
         rewards = (torch.tensor(batch['rewards'],
                                 dtype=torch.float32).unsqueeze(1).to(
                                     self.device))
-        next_states = torch.tensor(batch['next_states'],
-                                   dtype=torch.float32).to(self.device)
+        next_obs = torch.tensor(batch['next_obs'],
+                                dtype=torch.float32).to(self.device)
         dones = (torch.tensor(
             batch['dones'], dtype=torch.float32).unsqueeze(1).to(self.device))
 
         # Compute current Q values
-        current_q_values = self.q_network(states).gather(1, actions)
+        current_q_values = self.q_network(obs).gather(1, actions)
         # Compute target Q values
         if self.double_dqn:
             with torch.no_grad():
-                greedy_action = self.q_network(next_states).max(
-                    dim=1, keepdim=True)[1]
-                next_q_values = self.target_network(next_states).gather(
-                    1, greedy_action)
+                next_action = self.q_network(next_obs).max(dim=1,
+                                                           keepdim=True)[1]
+                next_q_values = self.target_network(next_obs).gather(
+                    1, next_action)
         else:
             with torch.no_grad():
-                next_q_values = self.target_network(next_states).max(
+                next_q_values = self.target_network(next_obs).max(
                     dim=1, keepdim=True)[0]
 
         target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
@@ -373,17 +356,16 @@ class ImpalaDQN:
         Returns:
             dict[str, float]: Evaluation results.
         """
-        test_env = make_env(env_id='CartPole-v0')
         eval_rewards = []
         eval_steps = []
         for _ in range(n_eval_episodes):
-            obs, info = test_env.reset()
+            obs, info = self.test_env.reset(seed=random.randint(0, 100))
             done = False
             episode_reward = 0.0
             episode_step = 0
             while not done:
                 action = self.predict(obs)
-                next_obs, reward, terminated, truncated, info = test_env.step(
+                next_obs, reward, terminated, truncated, info = self.test_env.step(
                     action)
                 obs = next_obs
                 done = terminated or truncated
@@ -394,8 +376,6 @@ class ImpalaDQN:
                     }
                     episode_reward = info_item['r']
                     episode_step = info_item['l']
-                if done:
-                    test_env.reset()
             eval_rewards.append(episode_reward)
             eval_steps.append(episode_step)
 
@@ -416,7 +396,7 @@ class ImpalaDQN:
         stop_event = mp.Event()
         actor_processes = []
         for actor_id in range(self.num_actors):
-            train_env = make_env(env_id='CartPole-v0')
+            train_env = make_gym_env(env_id='CartPole-v0')
             actor = mp.Process(
                 target=self.actor_process,
                 args=(actor_id, train_env, self.data_queue, stop_event),
@@ -451,5 +431,5 @@ class ImpalaDQN:
 
 
 if __name__ == '__main__':
-    impala_dqn = ImpalaDQN(state_dim=4, action_dim=2, num_actors=10)
+    impala_dqn = ImpalaDQN(env_name='CartPole-v0', num_actors=10)
     impala_dqn.run()

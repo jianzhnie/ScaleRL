@@ -251,14 +251,15 @@ class AsyncDQN:
                         episode_reward = info_item['r']
                         episode_length = info_item['l']
 
-                    with self.global_step.get_lock():
-                        self.global_step.value += 1
                     buffer.append((obs, action, reward, next_obs, done))
                     obs = next_obs
 
                 if buffer:
                     local_buffer_queue.put(buffer)
-                    local_ep_result_queue.put((episode_reward, episode_length))
+                    local_ep_result_queue.put((
+                        episode_length,
+                        episode_reward,
+                    ))
 
         except Exception as e:
             logger.error(f'Exception in actor process {actor_id}: {e}')
@@ -329,7 +330,10 @@ class AsyncDQN:
                 except local_buffer_queue.Empty:
                     continue  # 如果队列为空，继续循环
 
+                episode_length, episode_reward = local_ep_result
                 self.eps_greedy_scheduler.step()
+                with self.global_step.get_lock():
+                    self.global_step.value += episode_length
                 with self.global_episode.get_lock():
                     self.global_episode.value += 1
                 for experience in local_buffer:
