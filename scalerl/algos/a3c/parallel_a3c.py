@@ -24,10 +24,10 @@ logger = get_logger('a3c')
 
 
 class ActorCriticNet(nn.Module):
-    """Actor-Critic Neural Network.
+    """Actor-Critic Neural Network for A3C.
 
-    This network generates policy logits for the actor and value estimates for
-    the critic from given observations.
+    This network computes policy logits (for the actor) and value estimates
+    (for the critic) from input observations.
     """
 
     def __init__(self, obs_dim: int, hidden_dim: int, action_dim: int) -> None:
@@ -35,16 +35,20 @@ class ActorCriticNet(nn.Module):
 
         Args:
             obs_dim (int): Dimension of the observation space.
-            hidden_dim (int): Number of neurons in the hidden layer.
+            hidden_dim (int): Number of hidden units in the network.
             action_dim (int): Dimension of the action space.
         """
         super(ActorCriticNet, self).__init__()
+
+        # Shared feature extraction layers
         self.feature_net = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
         )
+
+        # Separate heads for actor and critic
         self.actor_linear = nn.Linear(hidden_dim, action_dim)
         self.critic_linear = nn.Linear(hidden_dim, 1)
 
@@ -55,16 +59,20 @@ class ActorCriticNet(nn.Module):
             obs (torch.Tensor): Observations from the environment.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Policy logits and state-value estimate.
+            Tuple[torch.Tensor, torch.Tensor]: Logits for policy (actor) and value estimate (critic).
         """
         feature = self.feature_net(obs)
-        value = self.critic_linear(feature)
-        logits = self.actor_linear(feature)
+        logits = self.actor_linear(feature)  # Policy logits for actor
+        value = self.critic_linear(feature)  # Value estimation for critic
         return logits, value
 
 
 class ParallelA3C:
-    """A3C Trainer Class to handle training and testing processes."""
+    """A3C Trainer Class to manage asynchronous training and testing.
+
+    This class manages multiple workers for parallel training using the A3C
+    algorithm.
+    """
 
     def __init__(
         self,
@@ -74,23 +82,35 @@ class ParallelA3C:
         max_episode_size: int = 1000,
         learning_rate: float = 0.001,
         gamma: float = 0.99,
-        gae_lambda: float = 0.95,
         entropy_coef: float = 0.01,
         value_loss_coef: float = 0.5,
         max_grad_norm: float = 50.0,
-        rollout_steps: int = 50,
+        rollout_steps: int = 30,
         no_shared: bool = True,
         eval_interval: int = 10,
         train_log_interval: int = 10,
-        target_update_frequency: int = 10,
         device: Union[torch.device, str] = 'auto',
     ) -> None:
-        """Initialize the A3C trainer with the environment, shared model, and
+        """Initialize the A3C trainer with environments, shared models, and
         optimizer.
 
         Args:
-            args (A3CArguments): Hyperparameters and arguments for A3C.
+            env_name (str): Name of the Gym environment.
+            num_workers (int): Number of worker processes.
+            hidden_dim (int): Number of hidden units in the network.
+            max_episode_size (int): Maximum number of episodes for training.
+            learning_rate (float): Learning rate for optimization.
+            gamma (float): Discount factor.
+            entropy_coef (float): Coefficient for entropy regularization.
+            value_loss_coef (float): Coefficient for critic value loss.
+            max_grad_norm (float): Maximum gradient norm for clipping.
+            rollout_steps (int): Number of steps per rollout.
+            no_shared (bool): Whether to use shared models across processes.
+            eval_interval (int): Interval for evaluation.
+            train_log_interval (int): Interval for logging training information.
+            device (Union[torch.device, str]): Device for model (CPU, GPU).
         """
+        # Initialize parameters and settings
         self.seed = random.randint(0, 100)
         self.env_name = env_name
         self.num_workers = num_workers
@@ -98,7 +118,6 @@ class ParallelA3C:
         self.max_episode_size = max_episode_size
         self.learning_rate = learning_rate
         self.gamma = gamma
-        self.gae_lambda = gae_lambda
         self.entropy_coef = entropy_coef
         self.value_loss_coef = value_loss_coef
         self.max_grad_norm = max_grad_norm
@@ -106,21 +125,22 @@ class ParallelA3C:
         self.no_shared = no_shared
         self.eval_interval = eval_interval
         self.train_log_interval = train_log_interval
-        self.target_update_frequency = target_update_frequency
 
+        # Get the appropriate device (CPU/GPU)
         self.device = get_device(device)
         print(f'Using {self.device} device')
 
-        # Create a shared queue for storing experiences
-        self.exp_queue = mp.Queue(maxsize=self.max_episode_size)
-        self.exp_queue_lock = mp.Lock()
+        # Create shared counters and reward queue
+        self.global_episode = mp.Value('i', 0)
+        self.result_queue = mp.Queue()
+        self.global_reward_queue = mp.Value('d', 0)
 
-        # Initialize environments for training and testing
+        # Create environment instances for training and testing
         self.env = make_gym_env(self.env_name)
         self.train_env = make_gym_env(env_id=self.env_name)
         self.test_env = make_gym_env(env_id=self.env_name)
 
-        # Get observation and action dimensions
+        # Get dimensions of observation and action spaces
         obs_shape = self.env.observation_space.shape or (
             self.env.observation_space.n, )
         action_shape = self.env.action_space.shape or (
@@ -128,37 +148,35 @@ class ParallelA3C:
         self.obs_dim = int(np.prod(obs_shape))
         self.action_dim = int(np.prod(action_shape))
 
-        # Initialize local and shared models
+        # Initialize local and shared models for actor-critic
         self.local_model = ActorCriticNet(self.obs_dim, self.hidden_dim,
                                           self.action_dim).to(self.device)
         self.shared_model = ActorCriticNet(self.obs_dim, self.hidden_dim,
                                            self.action_dim).to(self.device)
-        self.local_model.share_memory()
-        self.shared_model.share_memory(
-        )  # Share the model memory across processes
+        self.local_model.share_memory()  # Share the model across processes
+        self.shared_model.share_memory()
 
-        # Initialize optimizer
+        # Optimizer setup
         if not self.no_shared:
             self.optimizer = SharedAdam(self.shared_model.parameters(),
                                         lr=self.learning_rate)
-            self.optimizer.share_memory(
-            )  # Share the optimizer state across processes
+            self.optimizer.share_memory()
         else:
             self.optimizer = None
 
     def get_action(self, obs: torch.Tensor) -> int:
-        """Select an action using the local policy.
+        """Select an action using the local policy model.
 
         Args:
             obs (torch.Tensor): The observation input.
 
         Returns:
-            int: The selected action.
+            int: The action selected by the policy.
         """
         if obs.ndim == 1:
-            obs = np.expand_dims(obs, axis=0)  # Ensure batch size is 1
+            obs = np.expand_dims(obs, axis=0)  # Add batch dimension
 
-        obs = torch.tensor(obs, dtype=torch.float, device=self.device)
+        obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
         with torch.no_grad():
             logits, _ = self.local_model(obs)
         probs = F.softmax(logits, dim=-1)
@@ -167,18 +185,18 @@ class ParallelA3C:
         return action.item()
 
     def predict(self, obs: np.ndarray) -> int:
-        """Predict the most probable action.
+        """Predict the most likely action from the policy.
 
         Args:
-            obs (np.ndarray): Current observation.
+            obs (np.ndarray): Observation from the environment.
 
         Returns:
-            int: Action selected by the policy.
+            int: Predicted action based on the highest probability.
         """
         if obs.ndim == 1:
-            obs = np.expand_dims(obs, axis=0)  # Ensure batch size is 1
+            obs = np.expand_dims(obs, axis=0)
 
-        obs = torch.tensor(obs, dtype=torch.float, device=self.device)
+        obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
         with torch.no_grad():
             logits, _ = self.local_model(obs)
         probs = F.softmax(logits, dim=-1)
@@ -187,17 +205,18 @@ class ParallelA3C:
 
     def sync_with_shared_model(self, local_model: nn.Module,
                                shared_model: nn.Module) -> None:
-        """Synchronize local model parameters with the shared model.
+        """Synchronize local model weights with the shared global model.
 
         Args:
-            local_model (nn.Module): Local model.
+            local_model (nn.Module): Local model to sync.
             shared_model (nn.Module): Shared global model.
         """
         local_model.load_state_dict(shared_model.state_dict(), strict=False)
 
     def ensure_shared_grads(self, local_model: nn.Module,
                             shared_model: nn.Module) -> None:
-        """Ensure gradients from local model are applied to the shared model.
+        """Ensure that gradients from the local model are applied to the shared
+        model.
 
         Args:
             local_model (nn.Module): Local worker's model.
@@ -211,16 +230,17 @@ class ParallelA3C:
     def compute_loss(
             self, transition_dict: Dict[str,
                                         List[np.ndarray]]) -> torch.Tensor:
-        """Compute loss for both Actor and Critic.
+        """Compute loss for both the actor and critic based on transitions.
 
         Args:
-            transition_dict (Dict[str, List[np.ndarray]]): Transitions containing states, actions, rewards, etc.
+            transition_dict (Dict[str, List[np.ndarray]]): Transitions containing obs, actions, rewards, etc.
 
         Returns:
-            torch.Tensor: Total loss for the Actor and Critic.
+            torch.Tensor: Total loss for the actor and critic.
         """
-        # Convert transition arrays to tensors
         device = self.device
+
+        # Convert transition data to tensors
         obs = torch.tensor(np.array(transition_dict['obs']),
                            dtype=torch.float32,
                            device=device)
@@ -237,156 +257,192 @@ class ParallelA3C:
                              dtype=torch.float32,
                              device=device).view(-1, 1)
 
-        # Get current and next policy and value estimates
-        curr_policy, curr_value = self.local_model(obs)
-        _, next_value = self.local_model(next_obs)
-        curr_probs = F.softmax(curr_policy, dim=-1)
+        # Model outputs for current obs
+        logits, values = self.local_model(obs)
+        _, next_values = self.local_model(next_obs)
 
-        # Compute TD target and error
-        td_target = rewards + self.gamma * next_value * (1 - dones)
-        td_error = td_target - curr_value
+        probs = F.softmax(logits, dim=-1)
+        dist = torch.distributions.Categorical(probs)
+        log_probs = dist.log_prob(actions)
 
-        # Compute Actor and Critic losses
-        log_probs = torch.log(curr_probs).gather(1, actions)
-        actor_loss = torch.mean(-log_probs * td_error.detach())
-        critic_loss = F.mse_loss(td_target.detach(), curr_value)
+        # Calculate advantages and returns
+        td_target = rewards + self.gamma * next_values * (1 - dones)
+        delta = td_target - values
+        advantages = delta.detach()
 
-        total_loss = actor_loss + critic_loss
+        # Actor loss
+        actor_loss = -(log_probs * advantages).mean()
+
+        # Critic loss
+        critic_loss = F.mse_loss(values, td_target.detach())
+
+        # Entropy regularization (for exploration)
+        entropy = dist.entropy().mean()
+        total_loss = (actor_loss + self.value_loss_coef * critic_loss -
+                      self.entropy_coef * entropy)
         return total_loss
+
+    def rollout(self, seed: int,
+                rollout_steps: int) -> Dict[str, List[np.ndarray]]:
+        """Perform a rollout to collect experiences for training.
+
+        Args:
+            env: The environment in which to collect the rollout.
+            rollout_steps (int): Maximum number of steps to take in the environment.
+
+        Returns:
+            Dict[str, List[np.ndarray]]: A dictionary containing the rollout's transitions.
+        """
+        transition_dict = {
+            'obs': [],
+            'actions': [],
+            'rewards': [],
+            'next_obs': [],
+            'dones': [],
+        }
+        obs, _ = self.train_env.reset(seed=seed)
+        for step in range(rollout_steps):
+            action = self.get_action(obs)
+            next_obs, reward, terminal, truncated, info = self.train_env.step(
+                action)
+            done = terminal or truncated
+
+            # Append transition data
+            transition_dict['obs'].append(obs)
+            transition_dict['actions'].append(action)
+            transition_dict['rewards'].append(reward)
+            transition_dict['next_obs'].append(next_obs)
+            transition_dict['dones'].append(done)
+
+            obs = next_obs
+            if done:
+                break
+        return transition_dict
 
     def train(
             self,
             worker_id: int,
             optimizer: Optional[torch.optim.Optimizer] = None,
-            global_episode: Optional[mp.Value] = None,
             mp_lock: mp.Lock = mp.Lock(),
     ) -> None:
-        """Train the model using asynchronous advantage actor-critic.
+        """Train the A3C model using parallel workers.
 
         Args:
-            worker_id (int): Worker process ID.
-            optimizer (Optional[torch.optim.Optimizer]): Optimizer for updating shared model.
-            global_episode (Optional[mp.Value]): Global episode counter.
-            global_reward_queue (Optional[mp.Queue]): Queue to store rewards.
+            max_episodes (int): Maximum number of training episodes.
         """
+        logger.info(f'Train Worker {worker_id} starting...')
+
         seed = self.seed + worker_id
         torch.manual_seed(seed)
         self.local_model.train()
-
         # Update global episode counter
-        with global_episode.get_lock():
-            global_episode.value += 1
+        with self.global_episode.get_lock():
+            self.global_episode.value += 1
 
         if optimizer is None:
             optimizer = torch.optim.Adam(self.shared_model.parameters(),
                                          lr=self.learning_rate)
 
         # Sync local model with the shared model
-
         with mp_lock:
             self.sync_with_shared_model(self.local_model, self.shared_model)
 
-        while global_episode.value < self.max_episode_size:
-            transition_dict = {
-                'obs': [],
-                'actions': [],
-                'next_obs': [],
-                'rewards': [],
-                'dones': [],
-            }
-            obs, _ = self.train_env.reset(seed=seed)
-            done = False
-            episode_reward = 0
-            episode_length = 0
-            while not done:
-                action = self.get_action(obs)
-                next_obs, reward, terminal, truncated, _ = self.train_env.step(
-                    action)
-                done = terminal or truncated
+        while self.global_episode.value < self.max_episode_size:
+            transition_dict = self.rollout(seed, self.rollout_steps)
 
-                transition_dict['obs'].append(obs)
-                transition_dict['actions'].append(action)
-                transition_dict['next_obs'].append(next_obs)
-                transition_dict['rewards'].append(reward)
-                transition_dict['dones'].append(done)
+            # Compute loss and backpropagate
+            loss = self.compute_loss(transition_dict)
+            # Zero the gradients
+            optimizer.zero_grad()
+            loss.backward()
 
-                obs = next_obs
-                episode_reward += reward
-                episode_length += 1
+            # Clip gradients to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(self.local_model.parameters(),
+                                           self.max_grad_norm)
 
-            total_loss = self.compute_loss(transition_dict)
+            # Ensure the gradients are applied to the shared model if shared mode is enabled
+            if not self.no_shared:
+                self.ensure_shared_grads(self.local_model, self.shared_model)
+                optimizer.step()
 
+            # Log training information at specified intervals
             if self.global_episode.value % self.train_log_interval == 0:
-                log_message = (
-                    '[Train], gobal_episode:{}, episode_length: {}, episode_reward:{}, loss:{}'
-                ).format(
-                    self.global_episode.value,
-                    episode_length,
-                    episode_reward,
-                    total_loss.item(),
-                )
+                log_message = ('[Train], gobal_episode:{}, loss:{}').format(
+                    self.global_episode.value, loss.item())
                 logger.info(log_message)
 
-            # Backpropagation and optimization
-            self.optimizer.zero_grad()
-            total_loss.backward()
-            self.ensure_shared_grads(self.local_model, self.shared_model)
-            self.optimizer.step()
+        logger.info(f'Worker {worker_id} completed training.')
 
-    def test(self, worker_id: int) -> Tuple[float, int]:
-        """Test the model by running it in the environment and return episode
-        reward and length.
+    def evaluate(self,
+                 worker_id: int,
+                 num_episodes: int = 5,
+                 mp_lock: mp.Lock = mp.Lock()) -> float:
+        """Evaluate the policy by running it in the environment.
 
         Args:
-            worker_id (int): Worker process ID.
+            env: The environment for evaluation.
+            num_episodes (int): Number of episodes to evaluate.
 
         Returns:
-            Tuple[float, int]: Episode reward and episode length.
+            float: The average reward across all evaluation episodes.
         """
+        logger.info(f'Eval Worker {worker_id} starting...')
+
         self.local_model.eval()
         seed = self.seed + worker_id
-        torch.manual_seed(seed=seed)
+        # Sync local model with the shared model
+        with mp_lock:
+            self.sync_with_shared_model(self.local_model, self.shared_model)
 
-        self.sync_with_shared_model(self.local_model, self.shared_model)
-        obs, info = self.test_env.reset(seed=seed)
+        total_reward = 0.0
+        total_len = 0.0
+        for _ in range(num_episodes):
+            obs, info = self.test_env.reset(seed=seed)
+            done = False
+            episode_len = 0
+            episode_reward = 0
+            while not done:
+                action = self.predict(obs)
+                next_obs, reward, terminal, truncated, info = self.test_env.step(
+                    action)
+                done = terminal or truncated
+                episode_reward += reward
+                episode_len += 1
+                obs = next_obs
+            total_reward += episode_reward
+            total_len += episode_len
 
-        done = False
-        episode_reward = 0.0
-        episode_length = 0
+        avg_reward = total_reward / num_episodes
+        avg_len = total_len / num_episodes
+        return avg_reward, avg_len
 
-        while not done:
-            action = self.predict(obs)
-            next_obs, reward, terminal, truncated, _ = self.test_env.step(
-                action)
-            done = terminal or truncated
-            obs = next_obs
+    def save_model(self, path: str) -> None:
+        """Save the trained model to a file.
 
-            if info and 'episode' in info:
-                info_item = {k: v.item() for k, v in info['episode'].items()}
-                episode_reward = info_item['r']
-                episode_length = info_item['l']
+        Args:
+            path (str): Path where the model will be saved.
+        """
+        torch.save(self.local_model.state_dict(), path)
+        logger.info(f'Model saved to {path}')
 
-        log_message = (
-            '[Test], gobal_episode:{}, episode_length: {}, episode_reward:{}'
-        ).format(self.global_episode.value, episode_length, episode_reward)
-        logger.info(log_message)
-        return episode_reward, episode_length
+    def load_model(self, path: str) -> None:
+        """Load a pre-trained model from a file.
+
+        Args:
+            path (str): Path from where the model will be loaded.
+        """
+        self.local_model.load_state_dict(
+            torch.load(path, map_location=self.device))
+        logger.info(f'Model loaded from {path}')
 
     def run(self) -> None:
         """Run the agent by spawning processes for training and testing."""
         processes: List[mp.Process] = []
-
-        # Create shared counters and reward queue
-        self.global_episode = mp.Value('i', 0)
-        self.result_queue = mp.Queue()
-        self.global_reward_queue = mp.Value('d', 0)
-
         # Start the training processes
         for worker_id in range(self.num_workers):
             p = mp.Process(
                 target=self.train,
-                args=(worker_id, self.optimizer, self.global_episode,
-                      mp.Lock()),
+                args=(worker_id, self.optimizer, mp.Lock()),
             )
             p.start()
             processes.append(p)
@@ -397,5 +453,5 @@ class ParallelA3C:
 
 
 if __name__ == '__main__':
-    a3c = ParallelA3C(num_workers=4)
+    a3c = ParallelA3C(num_workers=4, device='cpu')
     a3c.run()
