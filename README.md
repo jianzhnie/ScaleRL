@@ -23,5 +23,6 @@ ScaleRL is a simple and scalable distributed reinforcement learning framework ba
 
 ### Distributed RL Blogs
 
+- https://github.com/maxpumperla/learning_ray/
 - https://www.jiqizhixin.com/articles/2024-02-15-6?from=synced&keyword=%E5%88%86%E5%B8%83%E5%BC%8F%E5%BC%BA%E5%8C%96%E5%AD%A6%E4%B9%A0
 - https://joseluisc99.github.io/posts/distributed-reinforcement-learning-a-draft/
