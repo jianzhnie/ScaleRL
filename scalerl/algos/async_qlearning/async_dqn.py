@@ -31,14 +31,13 @@ class QNetwork(nn.Module):
     """A simple feedforward neural network for Q-learning.
 
     Args:
-        state_dim (int): Dimension of the state space.
+        obs_dim (int): Dimension of the obs space.
         action_dim (int): Dimension of the action space.
     """
 
-    def __init__(self, state_dim: int, hidden_dim: int,
-                 action_dim: int) -> None:
+    def __init__(self, obs_dim: int, hidden_dim: int, action_dim: int) -> None:
         super(QNetwork, self).__init__()
-        self.fc1 = nn.Linear(state_dim, hidden_dim)
+        self.fc1 = nn.Linear(obs_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, action_dim)
 
@@ -46,7 +45,7 @@ class QNetwork(nn.Module):
         """Forward pass of the network.
 
         Args:
-            x (torch.Tensor): Input tensor representing the state.
+            x (torch.Tensor): Input tensor representing the obs.
 
         Returns:
             torch.Tensor: Output tensor representing the Q-values for each action.
@@ -70,7 +69,7 @@ class ReplayBuffer:
         """Add an experience to the buffer.
 
         Args:
-            experience (Tuple[np.ndarray, int, float, np.ndarray, bool]): A tuple containing (state, action, reward, next_state, done).
+            experience (Tuple[np.ndarray, int, float, np.ndarray, bool]): A tuple containing (obs, action, reward, next_obs, done).
         """
         self.memory.append(experience)
 
@@ -81,15 +80,15 @@ class ReplayBuffer:
             batch_size (int): Number of experiences to sample.
 
         Returns:
-            Dict[str, np.ndarray]: A dictionary containing states, actions, rewards, next_states, and dones.
+            Dict[str, np.ndarray]: A dictionary containing obs, actions, rewards, next_obs, and dones.
         """
         experiences = random.sample(self.memory, k=batch_size)
-        states, actions, rewards, next_states, dones = zip(*experiences)
+        obs, actions, rewards, next_obs, dones = zip(*experiences)
         batch = dict(
-            states=np.array(states),
+            obs=np.array(obs),
             actions=np.array(actions),
             rewards=np.array(rewards),
-            next_states=np.array(next_states),
+            next_obs=np.array(next_obs),
             dones=np.array(dones),
         )
         return batch
@@ -108,7 +107,7 @@ class AsyncDQN:
     with DQN.
 
     Args:
-        state_dim (int): Dimension of the state space.
+        obs_dim (int): Dimension of the obs space.
         action_dim (int): Dimension of the action space.
         num_actors (int): Number of actor processes.
         buffer_size (int): Maximum size of the replay buffer.
@@ -123,7 +122,7 @@ class AsyncDQN:
         env_name: str = None,
         num_actors: int = 4,
         hidden_dim: int = 64,
-        max_episode_size: int = 500,
+        max_episode_size: int = 50000,
         buffer_size: int = 10000,
         eps_greedy_start: float = 1.0,
         eps_greedy_end: float = 0.01,
@@ -132,7 +131,7 @@ class AsyncDQN:
         target_update_frequency: int = 10,
         double_dqn: bool = True,
         gamma: float = 0.99,
-        batch_size: int = 64,
+        batch_size: int = 128,
         learning_rate: float = 0.001,
         device: str = 'cpu',
     ) -> None:
@@ -214,7 +213,7 @@ class AsyncDQN:
         action = torch.argmax(q_values, dim=1).item()
         return action
 
-    def actor_process(self, actor_id: int, data_queue: mp.Queue,
+    def actor_process(self, actor_id: int, local_buffer_queue: mp.Queue,
                       stop_event: mp.Event) -> None:
         """Actor process that interacts with the environment and collects
         experiences.
@@ -222,19 +221,21 @@ class AsyncDQN:
         Args:
             actor_id (int): ID of the actor.
             env (gym.Env): Environment to interact with.
-            data_queue (mp.Queue): Queue to send collected experiences to the learner.
+            local_buffer_queue (mp.Queue): Queue to send collected experiences to the learner.
             stop_event (mp.Event): Event to signal the actor to stop.
         """
         logger.info(f'Actor {actor_id} started')
         try:
             while not stop_event.is_set():
-                state, _ = self.train_env.reset(seed=actor_id)
+                obs, _ = self.train_env.reset(seed=actor_id)
                 buffer: List[Tuple[np.ndarray, int, float, np.ndarray,
                                    bool]] = []
                 done = False
+                with self.global_episode.get_lock():
+                    self.global_episode.value += 1
                 while not done:
-                    action = self.get_action(state)
-                    next_state, reward, terminal, truncated, info = self.train_env.step(
+                    action = self.get_action(obs)
+                    next_obs, reward, terminal, truncated, info = self.train_env.step(
                         action)
                     done = terminal or truncated
 
@@ -248,18 +249,18 @@ class AsyncDQN:
 
                     with self.global_step.get_lock():
                         self.global_step.value += 1
-                    buffer.append((state, action, reward, next_state, done))
-                    state = next_state
+                    buffer.append((obs, action, reward, next_obs, done))
+                    obs = next_obs
 
                 if buffer:
-                    data_queue.put(buffer)
+                    local_buffer_queue.put(buffer)
 
                 self.eps_greedy_scheduler.step()
                 if (actor_id == 0
                         and self.global_episode.value % self.train_log_interval
                         == 0):
                     logger.info(
-                        'Actor {}: ,epidsode:{}, global step: {}, episode length: {} , episode reward: {}'
+                        'Actor {}:, epidsode:{}, global step: {}, episode length: {} , episode reward: {}'
                         .format(
                             actor_id,
                             self.global_episode.value,
@@ -273,30 +274,29 @@ class AsyncDQN:
             traceback.print_exc()
 
     def comput_loss(self, batch: Dict[str, np.array]) -> None:
-        states = torch.tensor(batch['states'],
-                              dtype=torch.float32).to(self.device)
+        obs = torch.tensor(batch['obs'], dtype=torch.float32).to(self.device)
         actions = (torch.tensor(batch['actions'],
                                 dtype=torch.long).unsqueeze(1).to(self.device))
         rewards = (torch.tensor(batch['rewards'],
                                 dtype=torch.float32).unsqueeze(1).to(
                                     self.device))
-        next_states = torch.tensor(batch['next_states'],
-                                   dtype=torch.float32).to(self.device)
+        next_obs = torch.tensor(batch['next_obs'],
+                                dtype=torch.float32).to(self.device)
         dones = (torch.tensor(
             batch['dones'], dtype=torch.float32).unsqueeze(1).to(self.device))
 
         # Compute current Q values
-        current_q_values = self.q_network(states).gather(1, actions)
+        current_q_values = self.q_network(obs).gather(1, actions)
         # Compute target Q values
         if self.double_dqn:
             with torch.no_grad():
-                greedy_action = self.q_network(next_states).max(
-                    dim=1, keepdim=True)[1]
-                next_q_values = self.target_network(next_states).gather(
-                    1, greedy_action)
+                next_action = self.q_network(next_obs).max(dim=1,
+                                                           keepdim=True)[1]
+                next_q_values = self.target_network(next_obs).gather(
+                    1, next_action)
         else:
             with torch.no_grad():
-                next_q_values = self.target_network(next_states).max(
+                next_q_values = self.target_network(next_obs).max(
                     dim=1, keepdim=True)[0]
 
         target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
@@ -313,13 +313,13 @@ class AsyncDQN:
         }
         return learn_result
 
-    def learner_process(self, worker_id: int, data_queue: mp.Queue,
+    def learner_process(self, worker_id: int, local_buffer_queue: mp.Queue,
                         stop_event: mp.Event):
         """Learner process that trains the Q-network using experiences from the
         actors.
 
         Args:
-            data_queue (mp.Queue): Queue to receive experiences from actors.
+            local_buffer_queue (mp.Queue): Queue to receive experiences from actors.
             stop_event (mp.Event): Event to signal the learner to stop.
         """
 
@@ -328,8 +328,8 @@ class AsyncDQN:
                    and not stop_event.is_set()):
                 try:
                     # Non-blocking with timeout
-                    data = data_queue.get()
-                except data_queue.Empty:
+                    data = local_buffer_queue.get()
+                except local_buffer_queue.Empty:
                     continue  # 如果队列为空，继续循环
 
                 for experience in data:
@@ -353,9 +353,6 @@ class AsyncDQN:
                     logger.info(
                         f'Episode {self.global_episode.value}: Evaluation results: {eval_results}'
                     )
-
-                with self.global_episode.get_lock():
-                    self.global_episode.value += 1
 
         except Exception as e:
             logger.error(f'Exception in learner process: {e}')
@@ -410,7 +407,7 @@ class AsyncDQN:
         self.global_step = mp.Value('i', 0)
         self.global_episode = mp.Value('i', 0)
         self.globale_episode_rerturn = mp.Value('d', 0)
-        self.data_queue = mp.Queue()
+        self.local_buffer_queue = mp.Queue()
         self.results_queue = mp.Queue()
 
         stop_event = mp.Event()
@@ -418,14 +415,14 @@ class AsyncDQN:
         for actor_id in range(self.num_actors):
             actor = mp.Process(
                 target=self.actor_process,
-                args=(actor_id, self.data_queue, stop_event),
+                args=(actor_id, self.local_buffer_queue, stop_event),
             )
             actor.start()
             actor_processes.append(actor)
 
         learner = mp.Process(
             target=self.learner_process,
-            args=(self.num_actors, self.data_queue, stop_event),
+            args=(self.num_actors, self.local_buffer_queue, stop_event),
         )
         learner.start()
 
