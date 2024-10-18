@@ -3,6 +3,7 @@ from __future__ import print_function
 import os
 import random
 import sys
+import traceback
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -77,18 +78,20 @@ class ParallelA3C:
     def __init__(
         self,
         env_name: str = 'CartPole-v0',
-        num_workers: int = 4,
-        hidden_dim: int = 8,
+        num_workers: int = 10,
+        hidden_dim: int = 64,
         max_episode_size: int = 1000,
         learning_rate: float = 0.001,
         gamma: float = 0.99,
         entropy_coef: float = 0.01,
         value_loss_coef: float = 0.5,
         max_grad_norm: float = 50.0,
-        rollout_steps: int = 30,
+        rollout_steps: int = 200,
         no_shared: bool = True,
         eval_interval: int = 10,
+        num_episodes_eval: int = 5,
         train_log_interval: int = 10,
+        eval_log_interval: int = 10,
         device: Union[torch.device, str] = 'auto',
     ) -> None:
         """Initialize the A3C trainer with environments, shared models, and
@@ -124,7 +127,9 @@ class ParallelA3C:
         self.rollout_steps = rollout_steps
         self.no_shared = no_shared
         self.eval_interval = eval_interval
+        self.num_episodes_eval = num_episodes_eval
         self.train_log_interval = train_log_interval
+        self.eval_log_interval = eval_log_interval
 
         # Get the appropriate device (CPU/GPU)
         self.device = get_device(device)
@@ -324,6 +329,7 @@ class ParallelA3C:
             worker_id: int,
             optimizer: Optional[torch.optim.Optimizer] = None,
             mp_lock: mp.Lock = mp.Lock(),
+            stop_event: mp.Event = None,
     ) -> None:
         """Train the A3C model using parallel workers.
 
@@ -335,48 +341,60 @@ class ParallelA3C:
         seed = self.seed + worker_id
         torch.manual_seed(seed)
         self.local_model.train()
-        # Update global episode counter
-        with self.global_episode.get_lock():
-            self.global_episode.value += 1
+        try:
+            while (self.global_episode.value < self.max_episode_size
+                   and not stop_event.is_set()):
+                # Update global episode counter
+                with self.global_episode.get_lock():
+                    self.global_episode.value += 1
 
-        if optimizer is None:
-            optimizer = torch.optim.Adam(self.shared_model.parameters(),
-                                         lr=self.learning_rate)
+                if optimizer is None:
+                    optimizer = torch.optim.Adam(
+                        self.shared_model.parameters(), lr=self.learning_rate)
 
-        # Sync local model with the shared model
-        with mp_lock:
-            self.sync_with_shared_model(self.local_model, self.shared_model)
+                # Sync local model with the shared model
+                with mp_lock:
+                    self.sync_with_shared_model(self.local_model,
+                                                self.shared_model)
 
-        while self.global_episode.value < self.max_episode_size:
-            transition_dict = self.rollout(seed, self.rollout_steps)
+                transition_dict = self.rollout(seed, self.rollout_steps)
 
-            # Compute loss and backpropagate
-            loss = self.compute_loss(transition_dict)
-            # Zero the gradients
-            optimizer.zero_grad()
-            loss.backward()
+                # Compute loss and backpropagate
+                loss = self.compute_loss(transition_dict)
+                # Zero the gradients
+                optimizer.zero_grad()
+                loss.backward()
 
-            # Clip gradients to prevent exploding gradients
-            torch.nn.utils.clip_grad_norm_(self.local_model.parameters(),
-                                           self.max_grad_norm)
+                # Clip gradients to prevent exploding gradients
+                torch.nn.utils.clip_grad_norm_(self.local_model.parameters(),
+                                               self.max_grad_norm)
 
-            # Ensure the gradients are applied to the shared model if shared mode is enabled
-            if not self.no_shared:
-                self.ensure_shared_grads(self.local_model, self.shared_model)
-                optimizer.step()
+                # Ensure the gradients are applied to the shared model if shared mode is enabled
+                if not self.no_shared:
+                    self.ensure_shared_grads(self.local_model,
+                                             self.shared_model)
+                    optimizer.step()
 
-            # Log training information at specified intervals
-            if self.global_episode.value % self.train_log_interval == 0:
-                log_message = ('[Train], gobal_episode:{}, loss:{}').format(
-                    self.global_episode.value, loss.item())
-                logger.info(log_message)
+                # Log training information at specified intervals
+                if self.global_episode.value % self.train_log_interval == 0:
+                    log_message = (
+                        '[Train], gobal_episode:{}, loss:{}').format(
+                            self.global_episode.value, loss.item())
+                    if worker_id == 0:
+                        logger.info(log_message)
+        except Exception as e:
+            logger.error(f'Exception in worker process {worker_id}: {e}')
+            traceback.print_exc()
 
         logger.info(f'Worker {worker_id} completed training.')
 
-    def evaluate(self,
-                 worker_id: int,
-                 num_episodes: int = 5,
-                 mp_lock: mp.Lock = mp.Lock()) -> float:
+    def evaluate(
+            self,
+            worker_id: int,
+            num_episodes: int = 5,
+            mp_lock: mp.Lock = mp.Lock(),
+            stop_event: mp.Event = None,
+    ) -> float:
         """Evaluate the policy by running it in the environment.
 
         Args:
@@ -387,33 +405,45 @@ class ParallelA3C:
             float: The average reward across all evaluation episodes.
         """
         logger.info(f'Eval Worker {worker_id} starting...')
+        try:
+            while (self.global_episode.value < self.max_episode_size
+                   and not stop_event.is_set()):
+                self.local_model.eval()
+                seed = self.seed + worker_id
+                # Sync local model with the shared model
+                with mp_lock:
+                    self.sync_with_shared_model(self.local_model,
+                                                self.shared_model)
 
-        self.local_model.eval()
-        seed = self.seed + worker_id
-        # Sync local model with the shared model
-        with mp_lock:
-            self.sync_with_shared_model(self.local_model, self.shared_model)
+                total_reward = 0.0
+                total_len = 0.0
+                for _ in range(num_episodes):
+                    obs, info = self.test_env.reset(seed=seed)
+                    done = False
+                    episode_len = 0
+                    episode_reward = 0
+                    while not done:
+                        action = self.predict(obs)
+                        next_obs, reward, terminal, truncated, info = (
+                            self.test_env.step(action))
+                        done = terminal or truncated
+                        episode_reward += reward
+                        episode_len += 1
+                        obs = next_obs
+                    total_reward += episode_reward
+                    total_len += episode_len
 
-        total_reward = 0.0
-        total_len = 0.0
-        for _ in range(num_episodes):
-            obs, info = self.test_env.reset(seed=seed)
-            done = False
-            episode_len = 0
-            episode_reward = 0
-            while not done:
-                action = self.predict(obs)
-                next_obs, reward, terminal, truncated, info = self.test_env.step(
-                    action)
-                done = terminal or truncated
-                episode_reward += reward
-                episode_len += 1
-                obs = next_obs
-            total_reward += episode_reward
-            total_len += episode_len
-
-        avg_reward = total_reward / num_episodes
-        avg_len = total_len / num_episodes
+                avg_reward = total_reward / num_episodes
+                avg_len = total_len / num_episodes
+                # Log training information at specified intervals
+                if self.global_episode.value % self.eval_log_interval == 0:
+                    log_message = (
+                        '[Eval], gobal_episode:{}, episode_length:{}, episode_rewards:{}'
+                    ).format(self.global_episode.value, avg_len, avg_reward)
+                    logger.info(log_message)
+        except Exception as e:
+            logger.error(f'Exception in worker process {worker_id}: {e}')
+            traceback.print_exc()
         return avg_reward, avg_len
 
     def save_model(self, path: str) -> None:
@@ -437,21 +467,46 @@ class ParallelA3C:
 
     def run(self) -> None:
         """Run the agent by spawning processes for training and testing."""
-        processes: List[mp.Process] = []
+        stop_event = mp.Event()
+        train_proc: List[mp.Process] = []
         # Start the training processes
         for worker_id in range(self.num_workers):
             p = mp.Process(
                 target=self.train,
-                args=(worker_id, self.optimizer, mp.Lock()),
+                args=(worker_id, self.optimizer, mp.Lock(), stop_event),
             )
             p.start()
-            processes.append(p)
+            train_proc.append(p)
 
-        # Wait for all processes to finish
-        for p in processes:
-            p.join()
+        eval_proc = mp.Process(
+            target=self.evaluate,
+            args=(self.num_workers, self.num_episodes_eval, mp.Lock(),
+                  stop_event),
+        )
+        eval_proc.start()
+
+        try:
+            eval_proc.join()
+        except KeyboardInterrupt:
+            logger.info(
+                'Keyboard interrupt received, stopping all processes...')
+        finally:
+            stop_event.set()
+            for worker in train_proc:
+                worker.join(timeout=1)  # 给予一定的时间让进程正常结束
+                if worker.is_alive():
+                    logger.warning(
+                        f'Actor process {worker.pid} did not terminate, force terminating...'
+                    )
+                    worker.terminate()
+            eval_proc.join(timeout=1)
+            if eval_proc.is_alive():
+                logger.warning(
+                    'Learner process did not terminate, force terminating...')
+                eval_proc.terminate()
+            logger.info('All processes have been stopped.')
 
 
 if __name__ == '__main__':
-    a3c = ParallelA3C(num_workers=4, device='cpu')
+    a3c = ParallelA3C(num_workers=10, device='cpu')
     a3c.run()
