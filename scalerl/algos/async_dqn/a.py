@@ -1,51 +1,76 @@
 import math
 import multiprocessing as mp
-import os
 import random
-import sys
 import traceback
 from collections import deque
 from typing import Dict, List, Tuple
 
+import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from gymnasium.wrappers import RecordEpisodeStatistics
+from hssdrl.utils.logger_utils import get_logger
+from hssdrl.utils.lr_scheduler import LinearDecayScheduler
 
-# Ensure paths are correctly set
-sys.path.append(os.getcwd())
-
-from scalerl.envs.gym_env import make_gym_env
-from scalerl.utils.logger_utils import get_logger
-from scalerl.utils.lr_scheduler import LinearDecayScheduler
-
-logger = get_logger('async_dqn')
+logger = get_logger('impala')
 
 
 def ceil_to_nearest_hundred(num: int):
     return math.ceil(num / 100) * 100
 
 
+def make_env(
+    env_id: str,
+    seed: int = 42,
+    capture_video: bool = False,
+    save_video_dir: str = 'work_dir',
+    save_video_name: str = 'test',
+) -> RecordEpisodeStatistics:
+    """Create and wrap the environment with necessary wrappers.
+
+    Args:
+        env_id (str): ID of the environment.
+        seed (int): Random seed.
+        capture_video (bool): Whether to capture video.
+        save_video_dir (str): Directory to save video.
+        save_video_name (str): Name of the video file.
+
+    Returns:
+        RecordEpisodeStatistics: Wrapped environment.
+    """
+    if capture_video:
+        env = gym.make(env_id, render_mode='rgb_array')
+        env = gym.wrappers.RecordVideo(env,
+                                       f'{save_video_dir}/{save_video_name}')
+    else:
+        env = gym.make(env_id)
+    env = gym.wrappers.RecordEpisodeStatistics(env)
+    env.action_space.seed(seed)
+    return env
+
+
 class QNetwork(nn.Module):
     """A simple feedforward neural network for Q-learning.
 
     Args:
-        obs_dim (int): Dimension of the obs space.
+        state_dim (int): Dimension of the state space.
         action_dim (int): Dimension of the action space.
     """
 
-    def __init__(self, obs_dim: int, hidden_dim: int, action_dim: int) -> None:
+    def __init__(self, state_dim: int, action_dim: int):
         super(QNetwork, self).__init__()
-        self.fc1 = nn.Linear(obs_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, action_dim)
+        self.fc1 = nn.Linear(state_dim, 64)
+        self.fc2 = nn.Linear(64, 64)
+        self.fc3 = nn.Linear(64, action_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the network.
 
         Args:
-            x (torch.Tensor): Input tensor representing the obs.
+            x (torch.Tensor): Input tensor representing the state.
 
         Returns:
             torch.Tensor: Output tensor representing the Q-values for each action.
@@ -69,7 +94,7 @@ class ReplayBuffer:
         """Add an experience to the buffer.
 
         Args:
-            experience (Tuple[np.ndarray, int, float, np.ndarray, bool]): A tuple containing (obs, action, reward, next_obs, done).
+            experience (Tuple[np.ndarray, int, float, np.ndarray, bool]): A tuple containing (state, action, reward, next_state, done).
         """
         self.memory.append(experience)
 
@@ -80,15 +105,15 @@ class ReplayBuffer:
             batch_size (int): Number of experiences to sample.
 
         Returns:
-            Dict[str, np.ndarray]: A dictionary containing obs, actions, rewards, next_obs, and dones.
+            Dict[str, np.ndarray]: A dictionary containing states, actions, rewards, next_states, and dones.
         """
         experiences = random.sample(self.memory, k=batch_size)
-        obs, actions, rewards, next_obs, dones = zip(*experiences)
+        states, actions, rewards, next_states, dones = zip(*experiences)
         batch = dict(
-            obs=np.array(obs),
+            states=np.array(states),
             actions=np.array(actions),
             rewards=np.array(rewards),
-            next_obs=np.array(next_obs),
+            next_states=np.array(next_states),
             dones=np.array(dones),
         )
         return batch
@@ -102,12 +127,12 @@ class ReplayBuffer:
         return len(self.memory)
 
 
-class AsyncDQN:
+class ImpalaDQN:
     """Implements the IMPALA (Importance Weighted Actor-Learner Architecture)
     with DQN.
 
     Args:
-        obs_dim (int): Dimension of the obs space.
+        state_dim (int): Dimension of the state space.
         action_dim (int): Dimension of the action space.
         num_actors (int): Number of actor processes.
         buffer_size (int): Maximum size of the replay buffer.
@@ -119,25 +144,26 @@ class AsyncDQN:
 
     def __init__(
         self,
-        env_name: str = None,
+        state_dim: int,
+        action_dim: int,
         num_actors: int = 4,
-        hidden_dim: int = 64,
-        max_episode_size: int = 500,
+        max_timesteps: int = 50000,
         buffer_size: int = 10000,
         eps_greedy_start: float = 1.0,
         eps_greedy_end: float = 0.01,
-        eval_interval: int = 10,
-        train_log_interval: int = 10,
-        target_update_frequency: int = 10,
+        eval_interval: int = 1000,
+        train_log_interval: int = 1000,
+        target_update_frequency: int = 2000,
         double_dqn: bool = True,
         gamma: float = 0.99,
-        batch_size: int = 128,
+        batch_size: int = 64,
         learning_rate: float = 0.001,
         device: str = 'cpu',
     ) -> None:
-        self.env_nae = env_name
+        self.state_dim = state_dim
+        self.action_dim = action_dim
         self.num_actors = num_actors
-        self.max_episode_size = max_episode_size
+        self.max_timesteps = max_timesteps
         self.buffer_size = buffer_size
         self.eval_interval = eval_interval
         self.train_log_interval = train_log_interval
@@ -148,20 +174,8 @@ class AsyncDQN:
         self.learning_rate = learning_rate
         self.device = device
 
-        self.train_env = make_gym_env(env_id=env_name)
-        self.test_env = make_gym_env(env_id=env_name)
-        # Get observation and action dimensions
-        obs_shape = self.test_env.observation_space.shape or (
-            self.test_env.observation_space.n, )
-        action_shape = self.test_env.action_space.shape or (
-            self.test_env.action_space.n, )
-        self.obs_dim = int(np.prod(obs_shape))
-        self.action_dim = int(np.prod(action_shape))
-
-        self.q_network = QNetwork(self.obs_dim, hidden_dim,
-                                  self.action_dim).to(device)
-        self.target_network = QNetwork(self.obs_dim, hidden_dim,
-                                       self.action_dim).to(device)
+        self.q_network = QNetwork(state_dim, action_dim).to(device)
+        self.target_network = QNetwork(state_dim, action_dim).to(device)
         self.target_network.load_state_dict(self.q_network.state_dict())
         self.optimizer = optim.Adam(self.q_network.parameters(),
                                     lr=learning_rate)
@@ -170,7 +184,7 @@ class AsyncDQN:
         self.eps_greedy_scheduler = LinearDecayScheduler(
             eps_greedy_start,
             eps_greedy_end,
-            max_steps=max_episode_size,
+            max_steps=max_timesteps * 0.9,
         )
         self.eps_greedy = eps_greedy_start
 
@@ -189,7 +203,7 @@ class AsyncDQN:
         else:
             action = self.predict(obs)
 
-        self.eps_greedy = max(self.eps_greedy_scheduler.cur_value,
+        self.eps_greedy = max(self.eps_greedy_scheduler.step(),
                               self.eps_greedy_end)
 
         return action
@@ -213,33 +227,27 @@ class AsyncDQN:
         action = torch.argmax(q_values, dim=1).item()
         return action
 
-    def actor_process(
-        self,
-        actor_id: int,
-        local_buffer_queue: mp.Queue,
-        local_ep_result_queue: mp.Queue,
-        stop_event: mp.Event,
-    ) -> None:
+    def actor_process(self, actor_id: int, env: gym.Env, data_queue: mp.Queue,
+                      stop_event: mp.Event) -> None:
         """Actor process that interacts with the environment and collects
         experiences.
 
         Args:
             actor_id (int): ID of the actor.
             env (gym.Env): Environment to interact with.
-            local_buffer_queue (mp.Queue): Queue to send collected experiences to the learner.
-            local_ep_result_queue (mp.Queue): Queue to send episode results to the learner.
+            data_queue (mp.Queue): Queue to send collected experiences to the learner.
             stop_event (mp.Event): Event to signal the actor to stop.
         """
         logger.info(f'Actor {actor_id} started')
         try:
             while not stop_event.is_set():
-                obs, _ = self.train_env.reset(seed=actor_id)
+                state, _ = env.reset()
                 buffer: List[Tuple[np.ndarray, int, float, np.ndarray,
                                    bool]] = []
                 done = False
                 while not done:
-                    action = self.get_action(obs)
-                    next_obs, reward, terminal, truncated, info = self.train_env.step(
+                    action = self.get_action(state)
+                    next_state, reward, terminal, truncated, info = env.step(
                         action)
                     done = terminal or truncated
 
@@ -249,45 +257,50 @@ class AsyncDQN:
                             for k, v in info['episode'].items()
                         }
                         episode_reward = info_item['r']
-                        episode_length = info_item['l']
+                        episode_step = info_item['l']
 
                     with self.global_step.get_lock():
                         self.global_step.value += 1
-                    buffer.append((obs, action, reward, next_obs, done))
-                    obs = next_obs
-
+                    buffer.append((state, action, reward, next_state, done))
+                    state = next_state
                 if buffer:
-                    local_buffer_queue.put(buffer)
-                    local_ep_result_queue.put((episode_reward, episode_length))
+                    data_queue.put(buffer)
+
+                global_step = ceil_to_nearest_hundred(self.global_step.value)
+                if actor_id == 0 and global_step % self.train_log_interval == 0:
+                    logger.info(
+                        'Actor {}: , episode step: {}, episode reward: {}'.
+                        format(actor_id, episode_step, episode_reward), )
 
         except Exception as e:
             logger.error(f'Exception in actor process {actor_id}: {e}')
             traceback.print_exc()
 
-    def comput_loss(self, batch: Dict[str, np.array]) -> None:
-        obs = torch.tensor(batch['obs'], dtype=torch.float32).to(self.device)
+    def learn(self, batch: Dict[str, np.array]) -> None:
+        states = torch.tensor(batch['states'],
+                              dtype=torch.float32).to(self.device)
         actions = (torch.tensor(batch['actions'],
                                 dtype=torch.long).unsqueeze(1).to(self.device))
         rewards = (torch.tensor(batch['rewards'],
                                 dtype=torch.float32).unsqueeze(1).to(
                                     self.device))
-        next_obs = torch.tensor(batch['next_obs'],
-                                dtype=torch.float32).to(self.device)
+        next_states = torch.tensor(batch['next_states'],
+                                   dtype=torch.float32).to(self.device)
         dones = (torch.tensor(
             batch['dones'], dtype=torch.float32).unsqueeze(1).to(self.device))
 
         # Compute current Q values
-        current_q_values = self.q_network(obs).gather(1, actions)
+        current_q_values = self.q_network(states).gather(1, actions)
         # Compute target Q values
         if self.double_dqn:
             with torch.no_grad():
-                next_action = self.q_network(next_obs).max(dim=1,
-                                                           keepdim=True)[1]
-                next_q_values = self.target_network(next_obs).gather(
-                    1, next_action)
+                greedy_action = self.q_network(next_states).max(
+                    dim=1, keepdim=True)[1]
+                next_q_values = self.target_network(next_states).gather(
+                    1, greedy_action)
         else:
             with torch.no_grad():
-                next_q_values = self.target_network(next_obs).max(
+                next_q_values = self.target_network(next_states).max(
                     dim=1, keepdim=True)[0]
 
         target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
@@ -304,75 +317,54 @@ class AsyncDQN:
         }
         return learn_result
 
-    def learner_process(
-        self,
-        worker_id: int,
-        local_buffer_queue: mp.Queue,
-        local_ep_result_queue: mp.Queue,
-        stop_event: mp.Event,
-    ) -> None:
+    def learner_process(self, data_queue: mp.Queue, stop_event: mp.Event):
         """Learner process that trains the Q-network using experiences from the
         actors.
 
         Args:
-            local_buffer_queue (mp.Queue): Queue to receive experiences from actors.
+            data_queue (mp.Queue): Queue to receive experiences from actors.
             stop_event (mp.Event): Event to signal the learner to stop.
         """
 
         try:
-            while (self.global_episode.value < self.max_episode_size
+            while (self.global_step.value < self.max_timesteps
                    and not stop_event.is_set()):
                 try:
                     # Non-blocking with timeout
-                    local_buffer = local_buffer_queue.get()
-                    local_ep_result = local_ep_result_queue.get()
-                except local_buffer_queue.Empty:
+                    data = data_queue.get()
+                except data_queue.Empty:
                     continue  # 如果队列为空，继续循环
 
-                self.eps_greedy_scheduler.step()
-                with self.global_episode.get_lock():
-                    self.global_episode.value += 1
-                for experience in local_buffer:
+                for experience in data:
                     self.replay_buffer.add(experience)
+
+                global_step = ceil_to_nearest_hundred(self.global_step.value)
 
                 if len(self.replay_buffer) >= self.batch_size:
                     batch = self.replay_buffer.sample(self.batch_size)
-                    self.comput_loss(batch)
+                    learn_result = self.learn(batch)
 
-                    if self.global_episode.value % self.target_update_frequency == 0:
+                    if global_step % self.target_update_frequency == 0:
                         self.target_network.load_state_dict(
                             self.q_network.state_dict())
 
-                    if self.global_episode.value % self.train_log_interval == 0:
-                        log_message = (
-                            '[Train], global_steps: {}, gobal_episode:{}, episode_length: {}, episode_reward:{}, eps_greedy: {}'
-                        ).format(
-                            self.global_step.value,
-                            self.global_episode.value,
-                            local_ep_result[0],
-                            local_ep_result[1],
-                            self.eps_greedy_scheduler.cur_value,
+                    if global_step % self.train_log_interval == 0:
+                        logger.info(
+                            f'Step {global_step}: Train results: {learn_result}'
                         )
-                        logger.info(log_message)
 
-                if self.global_episode.value % self.eval_interval == 0:
-                    eval_results = self.evaluate(worker_id, n_eval_episodes=5)
-                    log_message = '[Eval],  global_steps: {}, gobal_episode:{}, episode_length: {}, episode_reward: {}'.format(
-                        self.global_step.value,
-                        self.global_episode.value,
-                        eval_results['length_mean'],
-                        eval_results['reward_mean'],
+                if global_step % self.eval_interval == 0:
+                    eval_results = self.evaluate()
+                    logger.info(
+                        f'Step {global_step}: Evaluation results: {eval_results}'
                     )
-                    logger.info(log_message)
 
         except Exception as e:
             logger.error(f'Exception in learner process: {e}')
         finally:
             logger.info('Learner process is shutting down')
 
-    def evaluate(self,
-                 worker_id: int,
-                 n_eval_episodes: int = 5) -> dict[str, float]:
+    def evaluate(self, n_eval_episodes: int = 5) -> dict[str, float]:
         """Evaluate the model on the test environment.
 
         Args:
@@ -381,16 +373,17 @@ class AsyncDQN:
         Returns:
             dict[str, float]: Evaluation results.
         """
+        test_env = make_env(env_id='CartPole-v0')
         eval_rewards = []
         eval_steps = []
         for _ in range(n_eval_episodes):
-            obs, info = self.test_env.reset(seed=worker_id + 42)
+            obs, info = test_env.reset()
             done = False
             episode_reward = 0.0
-            episode_length = 0
+            episode_step = 0
             while not done:
                 action = self.predict(obs)
-                next_obs, reward, terminated, truncated, info = self.test_env.step(
+                next_obs, reward, terminated, truncated, info = test_env.step(
                     action)
                 obs = next_obs
                 done = terminated or truncated
@@ -400,9 +393,11 @@ class AsyncDQN:
                         for k, v in info['episode'].items()
                     }
                     episode_reward = info_item['r']
-                    episode_length = info_item['l']
+                    episode_step = info_item['l']
+                if done:
+                    test_env.reset()
             eval_rewards.append(episode_reward)
-            eval_steps.append(episode_length)
+            eval_steps.append(episode_step)
 
         return {
             'reward_mean': np.mean(eval_rewards),
@@ -416,34 +411,21 @@ class AsyncDQN:
 
         self.replay_buffer = ReplayBuffer(self.buffer_size)
         self.global_step = mp.Value('i', 0)
-        self.global_episode = mp.Value('i', 0)
-        self.local_buffer_queue = mp.Queue()
-        self.local_ep_res_queue = mp.Queue()
+        self.data_queue = mp.Queue(maxsize=500)
 
         stop_event = mp.Event()
         actor_processes = []
         for actor_id in range(self.num_actors):
+            train_env = make_env(env_id='CartPole-v0')
             actor = mp.Process(
                 target=self.actor_process,
-                args=(
-                    actor_id,
-                    self.local_buffer_queue,
-                    self.local_ep_res_queue,
-                    stop_event,
-                ),
+                args=(actor_id, train_env, self.data_queue, stop_event),
             )
             actor.start()
             actor_processes.append(actor)
 
-        learner = mp.Process(
-            target=self.learner_process,
-            args=(
-                self.num_actors,
-                self.local_buffer_queue,
-                self.local_ep_res_queue,
-                stop_event,
-            ),
-        )
+        learner = mp.Process(target=self.learner_process,
+                             args=(self.data_queue, stop_event))
         learner.start()
 
         try:
@@ -469,5 +451,5 @@ class AsyncDQN:
 
 
 if __name__ == '__main__':
-    impala_dqn = AsyncDQN(env_name='CartPole-v0', num_actors=10)
+    impala_dqn = ImpalaDQN(state_dim=4, action_dim=2, num_actors=10)
     impala_dqn.run()
