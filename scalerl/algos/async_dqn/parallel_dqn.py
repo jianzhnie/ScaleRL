@@ -5,7 +5,7 @@ import random
 import sys
 import traceback
 from collections import deque
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import numpy as np
 import torch
@@ -19,6 +19,7 @@ sys.path.append(os.getcwd())
 from scalerl.envs.gym_env import make_gym_env
 from scalerl.utils.logger_utils import get_logger
 from scalerl.utils.lr_scheduler import LinearDecayScheduler
+from scalerl.utils.utils import get_device
 
 logger = get_logger('async_dqn')
 
@@ -133,7 +134,7 @@ class AsyncDQN:
         gamma: float = 0.99,
         batch_size: int = 128,
         learning_rate: float = 0.001,
-        device: str = 'cpu',
+        device: Union[torch.device, str] = 'auto',
     ) -> None:
         self.env_nae = env_name
         self.num_actors = num_actors
@@ -146,8 +147,9 @@ class AsyncDQN:
         self.gamma = gamma
         self.batch_size = batch_size
         self.learning_rate = learning_rate
-        self.device = device
+        self.device = get_device(device)
 
+        print(f'Using {self.device} device')
         self.train_env = make_gym_env(env_id=env_name)
         self.test_env = make_gym_env(env_id=env_name)
         # Get observation and action dimensions

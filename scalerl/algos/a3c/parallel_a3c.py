@@ -1,9 +1,8 @@
 from __future__ import print_function
 
 import os
-import queue
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -18,6 +17,10 @@ sys.path.append(os.getcwd())
 from scalerl.algos.a3c.share_optim import SharedAdam
 from scalerl.algos.rl_args import A3CArguments
 from scalerl.envs.gym_env import make_gym_env
+from scalerl.utils.logger_utils import get_logger
+from scalerl.utils.utils import get_device
+
+logger = get_logger('a3c')
 
 
 class ActorCriticNet(nn.Module):
@@ -63,20 +66,58 @@ class ActorCriticNet(nn.Module):
 class ParallelA3C:
     """A3C Trainer Class to handle training and testing processes."""
 
-    def __init__(self, args: A3CArguments) -> None:
+    def __init__(
+        self,
+        env_name: str = 'CartPole-v0',
+        num_workers: int = 4,
+        hidden_dim: int = 128,
+        max_episode_size: int = 1000,
+        learning_rate: float = 0.001,
+        gamma: float = 0.99,
+        gae_lambda: float = 0.95,
+        entropy_coef: float = 0.01,
+        value_loss_coef: float = 0.5,
+        max_grad_norm: float = 50.0,
+        rollout_steps: int = 50,
+        no_shared: bool = False,
+        eval_interval: int = 10,
+        train_log_interval: int = 10,
+        target_update_frequency: int = 10,
+        device: Union[torch.device, str] = 'auto',
+    ) -> None:
         """Initialize the A3C trainer with the environment, shared model, and
         optimizer.
 
         Args:
             args (A3CArguments): Hyperparameters and arguments for A3C.
         """
-        self.args = args
-        self.gamma = args.gamma
+        self.env_name = env_name
+        self.num_workers = num_workers
+        self.hidden_dim = hidden_dim
+        self.max_episode_size = max_episode_size
+        self.learning_rate = learning_rate
+        self.gamma = gamma
+        self.gae_lambda = gae_lambda
+        self.entropy_coef = entropy_coef
+        self.value_loss_coef = value_loss_coef
+        self.max_grad_norm = max_grad_norm
+        self.rollout_steps = rollout_steps
+        self.no_shared = no_shared
+        self.eval_interval = eval_interval
+        self.train_log_interval = train_log_interval
+        self.target_update_frequency = target_update_frequency
+
+        self.device = get_device(device)
+        print(f'Using {self.device} device')
+
+        # Create a shared queue for storing experiences
+        self.exp_queue = mp.Queue(maxsize=self.max_episode_size)
+        self.exp_queue_lock = mp.Lock()
 
         # Initialize environments for training and testing
-        self.env = make_gym_env(self.args.env_name)
-        self.train_env = make_gym_env(env_id=self.args.env_name)
-        self.test_env = make_gym_env(env_id=self.args.env_name)
+        self.env = make_gym_env(self.env_name)
+        self.train_env = make_gym_env(env_id=self.env_name)
+        self.test_env = make_gym_env(env_id=self.env_name)
 
         # Get observation and action dimensions
         obs_shape = self.env.observation_space.shape or (
@@ -87,17 +128,17 @@ class ParallelA3C:
         self.action_dim = int(np.prod(action_shape))
 
         # Initialize local and shared models
-        self.local_model = ActorCriticNet(self.obs_dim, self.args.hidden_dim,
-                                          self.action_dim)
-        self.shared_model = ActorCriticNet(self.obs_dim, self.args.hidden_dim,
-                                           self.action_dim)
+        self.local_model = ActorCriticNet(self.obs_dim, self.hidden_dim,
+                                          self.action_dim).to(self.device)
+        self.shared_model = ActorCriticNet(self.obs_dim, self.hidden_dim,
+                                           self.action_dim).to(self.device)
         self.shared_model.share_memory(
         )  # Share the model memory across processes
 
         # Initialize optimizer
-        if not self.args.no_shared:
+        if not self.no_shared:
             self.optimizer = SharedAdam(self.shared_model.parameters(),
-                                        lr=self.args.lr)
+                                        lr=self.learning_rate)
             self.optimizer.share_memory(
             )  # Share the optimizer state across processes
         else:
@@ -142,8 +183,8 @@ class ParallelA3C:
         action = probs.argmax(dim=-1)
         return action.item()
 
-    def _sync_with_shared_model(self, local_model: nn.Module,
-                                shared_model: nn.Module) -> None:
+    def sync_with_shared_model(self, local_model: nn.Module,
+                               shared_model: nn.Module) -> None:
         """Synchronize local model parameters with the shared model.
 
         Args:
@@ -177,16 +218,22 @@ class ParallelA3C:
             torch.Tensor: Total loss for the Actor and Critic.
         """
         # Convert transition arrays to tensors
+        device = self.device
         obs = torch.tensor(np.array(transition_dict['obs']),
-                           dtype=torch.float32)
+                           dtype=torch.float32,
+                           device=device)
         actions = torch.tensor(transition_dict['actions'],
-                               dtype=torch.long).view(-1, 1)
+                               dtype=torch.long,
+                               device=device).view(-1, 1)
         rewards = torch.tensor(transition_dict['rewards'],
-                               dtype=torch.float32).view(-1, 1)
+                               dtype=torch.float32,
+                               device=device).view(-1, 1)
         next_obs = torch.tensor(np.array(transition_dict['next_obs']),
-                                dtype=torch.float32)
+                                dtype=torch.float32,
+                                device=device)
         dones = torch.tensor(transition_dict['dones'],
-                             dtype=torch.float32).view(-1, 1)
+                             dtype=torch.float32,
+                             device=device).view(-1, 1)
 
         # Get current and next policy and value estimates
         curr_policy, curr_value = self.local_model(obs)
@@ -209,29 +256,32 @@ class ParallelA3C:
         self,
         worker_id: int,
         optimizer: Optional[torch.optim.Optimizer] = None,
-        global_ep_counter: Optional[mp.Value] = None,
-        global_reward_queue: Optional[mp.Queue] = None,
+        global_episode: Optional[mp.Value] = None,
     ) -> None:
         """Train the model using asynchronous advantage actor-critic.
 
         Args:
             worker_id (int): Worker process ID.
             optimizer (Optional[torch.optim.Optimizer]): Optimizer for updating shared model.
-            global_ep_counter (Optional[mp.Value]): Global episode counter.
+            global_episode (Optional[mp.Value]): Global episode counter.
             global_reward_queue (Optional[mp.Queue]): Queue to store rewards.
         """
-        seed = self.args.seed + worker_id
+        seed = self.seed + worker_id
         torch.manual_seed(seed)
         self.local_model.train()
 
+        # Update global episode counter
+        with global_episode.get_lock():
+            global_episode.value += 1
+
         if optimizer is None:
             optimizer = torch.optim.Adam(self.shared_model.parameters(),
-                                         lr=self.args.lr)
+                                         lr=self.learning_rate)
 
         # Sync local model with the shared model
-        self._sync_with_shared_model(self.local_model, self.shared_model)
+        self.sync_with_shared_model(self.local_model, self.shared_model)
 
-        while global_ep_counter.value < self.args.max_episode_size:
+        while global_episode.value < self.max_episode_size:
             transition_dict = {
                 'obs': [],
                 'actions': [],
@@ -239,11 +289,10 @@ class ParallelA3C:
                 'rewards': [],
                 'dones': [],
             }
-            episode_reward = 0
-
             obs, _ = self.train_env.reset(seed=seed)
             done = False
-
+            episode_reward = 0
+            episode_length = 0
             while not done:
                 action = self.get_action(obs)
                 next_obs, reward, terminal, truncated, _ = self.train_env.step(
@@ -258,22 +307,26 @@ class ParallelA3C:
 
                 obs = next_obs
                 episode_reward += reward
+                episode_length += 1
 
             total_loss = self.compute_loss(transition_dict)
-            print(
-                f'Total loss: {total_loss.item()}, Episode reward: {episode_reward}'
-            )
+
+            if self.global_episode.value % self.train_log_interval == 0:
+                log_message = (
+                    '[Train], gobal_episode:{}, episode_length: {}, episode_reward:{}, loss:{}'
+                ).format(
+                    self.global_episode.value,
+                    episode_length,
+                    episode_reward,
+                    total_loss.item(),
+                )
+                logger.info(log_message)
 
             # Backpropagation and optimization
             self.optimizer.zero_grad()
             total_loss.backward()
             self.ensure_shared_grads(self.local_model, self.shared_model)
             self.optimizer.step()
-
-            # Update global episode counter
-            with global_ep_counter.get_lock():
-                global_ep_counter.value += 1
-                global_reward_queue.put(episode_reward)
 
     def test(self, worker_id: int) -> Tuple[float, int]:
         """Test the model by running it in the environment and return episode
@@ -286,10 +339,10 @@ class ParallelA3C:
             Tuple[float, int]: Episode reward and episode length.
         """
         self.local_model.eval()
-        seed = self.args.seed + worker_id
+        seed = self.seed + worker_id
         torch.manual_seed(seed=seed)
 
-        self._sync_with_shared_model(self.local_model, self.shared_model)
+        self.sync_with_shared_model(self.local_model, self.shared_model)
         obs, info = self.test_env.reset(seed=seed)
 
         done = False
@@ -308,9 +361,10 @@ class ParallelA3C:
                 episode_reward = info_item['r']
                 episode_length = info_item['l']
 
-        print(
-            f'Episode reward: {episode_reward}, Episode length: {episode_length}'
-        )
+        log_message = (
+            '[Test], gobal_episode:{}, episode_length: {}, episode_reward:{}'
+        ).format(self.global_episode.value, episode_length, episode_reward)
+        logger.info(log_message)
         return episode_reward, episode_length
 
     def run(self) -> None:
@@ -318,15 +372,19 @@ class ParallelA3C:
         processes: List[mp.Process] = []
 
         # Create shared counters and reward queue
-        global_ep_counter = mp.Value('i', 0)
-        global_reward_queue = queue.Queue()
+        self.global_episode = mp.Value('i', 0)
+        self.result_queue = mp.Queue()
+        self.global_reward_queue = mp.Value('d', 0)
 
         # Start the training processes
-        for rank in range(self.args.num_processes):
+        for worker_id in range(self.num_workers):
             p = mp.Process(
                 target=self.train,
-                args=(rank, self.optimizer, global_ep_counter,
-                      global_reward_queue),
+                args=(
+                    worker_id,
+                    self.optimizer,
+                    self.global_episode,
+                ),
             )
             p.start()
             processes.append(p)
