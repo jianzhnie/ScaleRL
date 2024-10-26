@@ -103,7 +103,7 @@ class ReplayBuffer:
         return len(self.memory)
 
 
-class ImpalaDQN:
+class ParallelDQNv2:
     """Implements the IMPALA (Importance Weighted Actor-Learner Architecture)
     with DQN.
 
@@ -435,5 +435,5 @@ class ImpalaDQN:
 
 
 if __name__ == '__main__':
-    impala_dqn = ImpalaDQN(env_name='CartPole-v0', num_actors=10)
+    impala_dqn = ParallelDQNv2(env_name="CartPole-v0", num_actors=10)
     impala_dqn.run()

@@ -16,7 +16,7 @@ import torch.nn.functional as F
 sys.path.append(os.getcwd())
 
 # Custom imports from project
-from scalerl.algos.a3c.share_optim import SharedAdam
+from scalerl.algorithms.a3c.share_optim import SharedAdam
 from scalerl.envs.gym_env import make_gym_env
 from scalerl.utils.logger_utils import get_logger
 from scalerl.utils.utils import get_device

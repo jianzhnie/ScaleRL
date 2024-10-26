@@ -103,7 +103,7 @@ class ReplayBuffer:
         return len(self.memory)
 
 
-class AsyncDQN:
+class ParallelDQN:
     """Implements the IMPALA (Importance Weighted Actor-Learner Architecture)
     with DQN.
 
