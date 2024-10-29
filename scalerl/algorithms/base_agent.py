@@ -1,10 +1,8 @@
 from abc import ABCMeta, abstractmethod
 from typing import Any
 
-import torch.nn as nn
 
-
-class BaseAgent(nn.Module, metaclass=ABCMeta):
+class BaseAgent(metaclass=ABCMeta):
     """Abstract base class for reinforcement learning agents.
 
     This class defines the common interface and methods that any agent should
@@ -88,20 +86,20 @@ class BaseAgent(nn.Module, metaclass=ABCMeta):
         raise NotImplementedError('Subclasses should implement this method.')
 
     @abstractmethod
-    def save_model(self, save_dir: str) -> None:
+    def save_checkpoint(self, path: str) -> None:
         """Save the model to the specified directory.
 
         Args:
-            save_dir (str): Directory to save the model.
+            path (str): Directory to save the model.
         """
         raise NotImplementedError
 
     @abstractmethod
-    def load_model(self, save_dir: str) -> None:
+    def load_checkpoint(self, path: str) -> None:
         """Load the model from the specified directory.
 
         Args:
-            save_dir (str): Directory to load the model from.
+            path (str): Directory to load the model from.
         """
         raise NotImplementedError
 

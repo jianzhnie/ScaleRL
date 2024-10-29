@@ -1,5 +1,4 @@
 import copy
-import inspect
 import random
 from typing import List, Optional
 
@@ -11,8 +10,8 @@ from accelerate import Accelerator
 
 from scalerl.algorithms.base_agent import BaseAgent
 from scalerl.algorithms.utils.network import QNet
-from scalerl.utils.algo_utils import (chkpt_attribute_to_device,
-                                      unwrap_optimizer)
+from scalerl.utils.algo_utils import unwrap_optimizer
+from scalerl.utils.model_utils import soft_target_update
 
 
 class DQN(BaseAgent):
@@ -23,14 +22,14 @@ class DQN(BaseAgent):
 
     def __init__(
         self,
-        state_dim: int,
+        obs_dim: int,
         action_dim: int,
         batch_size: int = 64,
         learning_rate: float = 1e-4,
         learn_step: int = 5,
         gamma: float = 0.99,
         tau: float = 1e-3,
-        double: bool = False,
+        double_dqn: bool = False,
         device: str = 'cpu',
         accelerator: Optional[Accelerator] = None,
         wrap: bool = True,
@@ -38,7 +37,7 @@ class DQN(BaseAgent):
         """Initializes the DQN agent."""
         super().__init__()
         self.algo = 'DQN'
-        self.state_dim = state_dim
+        self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.batch_size = batch_size
         self.learning_rate = learning_rate
@@ -47,10 +46,10 @@ class DQN(BaseAgent):
         self.tau = tau
         self.device = device
         self.accelerator = accelerator
-        self.double = double
+        self.double_dqn = double_dqn
 
         # Create the actor network and target network
-        self.actor = QNet()
+        self.actor = QNet(obs_dim=self.obs_dim, action_dim=self.action_dim)
         self.actor_target = copy.deepcopy(self.actor)
         self.actor_target.load_state_dict(self.actor.state_dict())
         self.optimizer = optim.Adam(self.actor.parameters(),
@@ -110,6 +109,29 @@ class DQN(BaseAgent):
 
         return action
 
+    def predict(
+        self,
+        state: np.ndarray,
+        action_mask: Optional[np.ndarray] = None,
+    ) -> np.array:
+        state = torch.from_numpy(state).float()
+        if self.accelerator is None:
+            state = state.to(self.device)
+        else:
+            state = state.to(self.accelerator.device)
+
+        state = state.unsqueeze(0)
+        with torch.no_grad():
+            action_values = self.actor(state).cpu().data.numpy()
+
+        if action_mask is None:
+            action = np.argmax(action_values, axis=-1)
+        else:
+            inv_mask = 1 - action_mask
+            masked_action_values = np.ma.array(action_values, mask=inv_mask)
+            action = np.argmax(masked_action_values, axis=-1)
+        return action
+
     def learn(self, experiences: List[torch.Tensor]) -> float:
         """Updates agent network parameters to learn from experiences."""
         states, actions, rewards, next_states, dones = experiences
@@ -120,7 +142,7 @@ class DQN(BaseAgent):
             next_states = next_states.to(self.accelerator.device)
             dones = dones.to(self.accelerator.device)
 
-        if self.double:  # Double Q-learning
+        if self.double_dqn:  # Double Q-learning
             q_idx = self.actor_target(next_states).argmax(dim=1).unsqueeze(1)
             q_target = self.actor(next_states).gather(dim=1,
                                                       index=q_idx).detach()
@@ -142,7 +164,9 @@ class DQN(BaseAgent):
         self.optimizer.step()
 
         # soft update target network
-        self.soft_update()
+        soft_target_update(src_model=self.actor,
+                           tgt_model=self.actor_target,
+                           tau=self.tau)
         return loss.item()
 
     def test(
@@ -181,7 +205,6 @@ class DQN(BaseAgent):
                             finished[idx] = 1
                 rewards.append(np.mean(completed_episode_scores))
         mean_fit = np.mean(rewards)
-        self.fitness.append(mean_fit)
         return mean_fit
 
     def wrap_models(self) -> None:
@@ -204,9 +227,7 @@ class DQN(BaseAgent):
         """Saves a checkpoint of agent properties and network weights to
         path."""
         network_info = {
-            'actor_init_dict': self.actor.init_dict,
             'actor_state_dict': self.actor.state_dict(),
-            'actor_target_init_dict': self.actor_target.init_dict,
             'actor_target_state_dict': self.actor_target.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
         }
@@ -215,14 +236,6 @@ class DQN(BaseAgent):
 
     def load_checkpoint(self, path: str) -> None:
         """Loads saved agent properties and network weights from checkpoint."""
-        network_info = [
-            'actor_state_dict',
-            'actor_target_state_dict',
-            'optimizer_state_dict',
-            'actor_init_dict',
-            'actor_target_init_dict',
-        ]
-
         checkpoint = torch.load(path, map_location=self.device)
 
         self.optimizer = optim.Adam(self.actor.parameters(),
@@ -231,50 +244,3 @@ class DQN(BaseAgent):
         self.actor_target.load_state_dict(
             checkpoint['actor_target_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-        for attribute in checkpoint.keys():
-            if attribute not in network_info:
-                setattr(self, attribute, checkpoint[attribute])
-
-    @classmethod
-    def load(cls,
-             path: str,
-             device: str = 'cpu',
-             accelerator: Optional[Accelerator] = None) -> 'DQN':
-        """Creates agent with properties and network weights loaded from
-        path."""
-        checkpoint = torch.load(path, map_location=device)
-        checkpoint['actor_init_dict']['device'] = device
-        checkpoint['actor_target_init_dict']['device'] = device
-
-        actor_state_dict = chkpt_attribute_to_device(
-            checkpoint.pop('actor_state_dict'), device)
-        actor_target_state_dict = chkpt_attribute_to_device(
-            checkpoint.pop('actor_target_state_dict'), device)
-        optimizer_state_dict = chkpt_attribute_to_device(
-            checkpoint.pop('optimizer_state_dict'), device)
-
-        checkpoint['device'] = device
-        checkpoint['accelerator'] = accelerator
-        checkpoint = chkpt_attribute_to_device(checkpoint, device)
-
-        constructor_params = inspect.signature(cls.__init__).parameters.keys()
-        class_init_dict = {
-            k: v
-            for k, v in checkpoint.items() if k in constructor_params
-        }
-
-        if checkpoint['net_config'] is not None:
-            agent = cls(**class_init_dict)
-            agent.arch = checkpoint['net_config']['arch']
-
-        agent.optimizer = optim.Adam(agent.actor.parameters(),
-                                     lr=agent.learning_rate)
-        agent.actor.load_state_dict(actor_state_dict)
-        agent.actor_target.load_state_dict(actor_target_state_dict)
-        agent.optimizer.load_state_dict(optimizer_state_dict)
-
-        if accelerator is not None:
-            agent.wrap_models()
-
-        return agent
