@@ -13,22 +13,16 @@ ScaleRL is a simple and scalable distributed reinforcement learning framework ba
 
 ### Distributed RL Libraries
 
-- https://github.com/pytorch/rl
-- https://github.com/rusty-sj/Reinforcement-Learning-Algorithms-with-Ray-Framework-and-Intel-DevCloud
-- https://github.com/LiuShuai26/Distributed-RL.git
-- https://github.com/stephenoffer/coach-ray/tree/master
-- https://github.com/seolhokim/DistributedRL-Pytorch-Ray.git
-- https://github.com/datawhalechina/joyrl.git
 - https://github.com/ray-project/ray
-- https://github.com/DeNA/HandyRL.git
-- https://github.com/pocokhc/simple_distributed_rl.git
+- https://github.com/pytorch/rl
 - https://github.com/facebookresearch/torchbeast
 - https://github.com/facebookresearch/rlmeta
 - https://github.com/alex-petrenko/sample-factory
-- https://github.com/google-deepmind/scalable_agent
+- https://github.com/sjtu-marl/malib.git
+- https://github.com/Replicable-MARL/MARLlib
+- https://github.com/seolhokim/DistributedRL-Pytorch-Ray.git
 
 ### Distributed RL Blogs
 
-- https://github.com/maxpumperla/learning_ray/
 - https://www.jiqizhixin.com/articles/2024-02-15-6?from=synced&keyword=%E5%88%86%E5%B8%83%E5%BC%8F%E5%BC%BA%E5%8C%96%E5%AD%A6%E4%B9%A0
 - https://joseluisc99.github.io/posts/distributed-reinforcement-learning-a-draft/
