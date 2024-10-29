@@ -435,5 +435,5 @@ class ParallelDQNv2:
 
 
 if __name__ == '__main__':
-    impala_dqn = ParallelDQNv2(env_name="CartPole-v0", num_actors=10)
+    impala_dqn = ParallelDQNv2(env_name='CartPole-v0', num_actors=10)
     impala_dqn.run()

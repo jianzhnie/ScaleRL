@@ -2,6 +2,47 @@ import torch
 import torch.nn as nn
 
 
+class QNet(nn.Module):
+    """A simple feedforward neural network for Q-learning.
+
+    This network takes in observations and outputs Q-values for each action.
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        hidden_dim: int = 128,
+    ) -> None:
+        """Initializes the QNet.
+
+        :param obs_dim: Dimension of the observation space.
+        :type obs_dim: int
+        :param action_dim: Dimension of the action space.
+        :type action_dim: int
+        :param hidden_dim: Dimension of the hidden layers, defaults to 128.
+        :type hidden_dim: int, optional
+        """
+        super(QNet, self).__init__()
+        self.network = nn.Sequential(
+            nn.Linear(obs_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_dim, action_dim),
+        )
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the QNet.
+
+        :param obs: Observation tensor.
+        :type obs: torch.Tensor
+        :return: Q-values for each action.
+        :rtype: torch.Tensor
+        """
+        return self.network(obs)
+
+
 class ActorNet(nn.Module):
 
     def __init__(self, obs_dim: int, hidden_dim: int, action_dim: int) -> None:

@@ -21,7 +21,7 @@ from scalerl.utils.logger_utils import get_logger
 from scalerl.utils.lr_scheduler import LinearDecayScheduler
 from scalerl.utils.utils import get_device
 
-logger = get_logger("async_dqn")
+logger = get_logger('async_dqn')
 
 
 def ceil_to_nearest_hundred(num: int):
@@ -134,7 +134,7 @@ class ParallelDQN:
         gamma: float = 0.99,
         batch_size: int = 128,
         learning_rate: float = 0.001,
-        device: Union[torch.device, str] = "auto",
+        device: Union[torch.device, str] = 'auto',
     ) -> None:
         self.env_nae = env_name
         self.num_actors = num_actors
@@ -149,25 +149,24 @@ class ParallelDQN:
         self.learning_rate = learning_rate
         self.device = get_device(device)
 
-        print(f"Using {self.device} device")
+        print(f'Using {self.device} device')
         self.train_env = make_gym_env(env_id=env_name)
         self.test_env = make_gym_env(env_id=env_name)
         # Get observation and action dimensions
         obs_shape = self.test_env.observation_space.shape or (
-            self.test_env.observation_space.n,
-        )
+            self.test_env.observation_space.n, )
         action_shape = self.test_env.action_space.shape or (
-            self.test_env.action_space.n,
-        )
+            self.test_env.action_space.n, )
         self.obs_dim = int(np.prod(obs_shape))
         self.action_dim = int(np.prod(action_shape))
 
-        self.q_network = QNetwork(self.obs_dim, hidden_dim, self.action_dim).to(device)
-        self.target_network = QNetwork(self.obs_dim, hidden_dim, self.action_dim).to(
-            device
-        )
+        self.q_network = QNetwork(self.obs_dim, hidden_dim,
+                                  self.action_dim).to(device)
+        self.target_network = QNetwork(self.obs_dim, hidden_dim,
+                                       self.action_dim).to(device)
         self.target_network.load_state_dict(self.q_network.state_dict())
-        self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
+        self.optimizer = optim.Adam(self.q_network.parameters(),
+                                    lr=learning_rate)
         self.eps_greedy_start = eps_greedy_start
         self.eps_greedy_end = eps_greedy_end
         self.eps_greedy_scheduler = LinearDecayScheduler(
@@ -192,7 +191,8 @@ class ParallelDQN:
         else:
             action = self.predict(obs)
 
-        self.eps_greedy = max(self.eps_greedy_scheduler.cur_value, self.eps_greedy_end)
+        self.eps_greedy = max(self.eps_greedy_scheduler.cur_value,
+                              self.eps_greedy_end)
 
         return action
 
@@ -232,83 +232,78 @@ class ParallelDQN:
             local_ep_result_queue (mp.Queue): Queue to send episode results to the learner.
             stop_event (mp.Event): Event to signal the actor to stop.
         """
-        logger.info(f"Actor {actor_id} started")
+        logger.info(f'Actor {actor_id} started')
         try:
             while not stop_event.is_set():
                 obs, _ = self.train_env.reset(seed=actor_id)
-                buffer: List[Tuple[np.ndarray, int, float, np.ndarray, bool]] = []
+                buffer: List[Tuple[np.ndarray, int, float, np.ndarray,
+                                   bool]] = []
                 done = False
                 while not done:
                     action = self.get_action(obs)
                     next_obs, reward, terminal, truncated, info = self.train_env.step(
-                        action
-                    )
+                        action)
                     done = terminal or truncated
 
-                    if info and "episode" in info:
-                        info_item = {k: v.item() for k, v in info["episode"].items()}
-                        episode_reward = info_item["r"]
-                        episode_length = info_item["l"]
+                    if info and 'episode' in info:
+                        info_item = {
+                            k: v.item()
+                            for k, v in info['episode'].items()
+                        }
+                        episode_reward = info_item['r']
+                        episode_length = info_item['l']
 
                     buffer.append((obs, action, reward, next_obs, done))
                     obs = next_obs
 
                 if buffer:
                     local_buffer_queue.put(buffer)
-                    local_ep_result_queue.put(
-                        (
-                            episode_length,
-                            episode_reward,
-                        )
-                    )
+                    local_ep_result_queue.put((
+                        episode_length,
+                        episode_reward,
+                    ))
 
         except Exception as e:
-            logger.error(f"Exception in actor process {actor_id}: {e}")
+            logger.error(f'Exception in actor process {actor_id}: {e}')
             traceback.print_exc()
 
     def comput_loss(self, batch: Dict[str, np.array]) -> None:
-        obs = torch.tensor(batch["obs"], dtype=torch.float32).to(self.device)
-        actions = (
-            torch.tensor(batch["actions"], dtype=torch.long)
-            .unsqueeze(1)
-            .to(self.device)
-        )
-        rewards = (
-            torch.tensor(batch["rewards"], dtype=torch.float32)
-            .unsqueeze(1)
-            .to(self.device)
-        )
-        next_obs = torch.tensor(batch["next_obs"], dtype=torch.float32).to(self.device)
-        dones = (
-            torch.tensor(batch["dones"], dtype=torch.float32)
-            .unsqueeze(1)
-            .to(self.device)
-        )
+        obs = torch.tensor(batch['obs'], dtype=torch.float32).to(self.device)
+        actions = (torch.tensor(batch['actions'],
+                                dtype=torch.long).unsqueeze(1).to(self.device))
+        rewards = (torch.tensor(batch['rewards'],
+                                dtype=torch.float32).unsqueeze(1).to(
+                                    self.device))
+        next_obs = torch.tensor(batch['next_obs'],
+                                dtype=torch.float32).to(self.device)
+        dones = (torch.tensor(
+            batch['dones'], dtype=torch.float32).unsqueeze(1).to(self.device))
 
         # Compute current Q values
         current_q_values = self.q_network(obs).gather(1, actions)
         # Compute target Q values
         if self.double_dqn:
             with torch.no_grad():
-                next_action = self.q_network(next_obs).max(dim=1, keepdim=True)[1]
-                next_q_values = self.target_network(next_obs).gather(1, next_action)
+                next_action = self.q_network(next_obs).max(dim=1,
+                                                           keepdim=True)[1]
+                next_q_values = self.target_network(next_obs).gather(
+                    1, next_action)
         else:
             with torch.no_grad():
-                next_q_values = self.target_network(next_obs).max(dim=1, keepdim=True)[
-                    0
-                ]
+                next_q_values = self.target_network(next_obs).max(
+                    dim=1, keepdim=True)[0]
 
         target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
 
         # Compute loss
-        loss = F.mse_loss(current_q_values, target_q_values, reduction="mean")
+        loss = F.mse_loss(current_q_values, target_q_values, reduction='mean')
 
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
         learn_result = {
-            "loss": loss.item(),
+            'loss': loss.item(),
         }
         return learn_result
 
@@ -328,10 +323,8 @@ class ParallelDQN:
         """
 
         try:
-            while (
-                self.global_episode.value < self.max_episode_size
-                and not stop_event.is_set()
-            ):
+            while (self.global_episode.value < self.max_episode_size
+                   and not stop_event.is_set()):
                 try:
                     # Non-blocking with timeout
                     local_buffer = local_buffer_queue.get()
@@ -353,11 +346,12 @@ class ParallelDQN:
                     self.comput_loss(batch)
 
                     if self.global_episode.value % self.target_update_frequency == 0:
-                        self.target_network.load_state_dict(self.q_network.state_dict())
+                        self.target_network.load_state_dict(
+                            self.q_network.state_dict())
 
                     if self.global_episode.value % self.train_log_interval == 0:
                         log_message = (
-                            "[Train], global_steps: {}, gobal_episode:{}, episode_length: {}, episode_reward:{}, eps_greedy: {}"
+                            '[Train], global_steps: {}, gobal_episode:{}, episode_length: {}, episode_reward:{}, eps_greedy: {}'
                         ).format(
                             self.global_step.value,
                             self.global_episode.value,
@@ -369,20 +363,22 @@ class ParallelDQN:
 
                 if self.global_episode.value % self.eval_interval == 0:
                     eval_results = self.evaluate(worker_id, n_eval_episodes=5)
-                    log_message = "[Eval],  global_steps: {}, gobal_episode:{}, episode_length: {}, episode_reward: {}".format(
+                    log_message = '[Eval],  global_steps: {}, gobal_episode:{}, episode_length: {}, episode_reward: {}'.format(
                         self.global_step.value,
                         self.global_episode.value,
-                        eval_results["length_mean"],
-                        eval_results["reward_mean"],
+                        eval_results['length_mean'],
+                        eval_results['reward_mean'],
                     )
                     logger.info(log_message)
 
         except Exception as e:
-            logger.error(f"Exception in learner process: {e}")
+            logger.error(f'Exception in learner process: {e}')
         finally:
-            logger.info("Learner process is shutting down")
+            logger.info('Learner process is shutting down')
 
-    def evaluate(self, worker_id: int, n_eval_episodes: int = 5) -> dict[str, float]:
+    def evaluate(self,
+                 worker_id: int,
+                 n_eval_episodes: int = 5) -> dict[str, float]:
         """Evaluate the model on the test environment.
 
         Args:
@@ -401,30 +397,32 @@ class ParallelDQN:
             while not done:
                 action = self.predict(obs)
                 next_obs, reward, terminated, truncated, info = self.test_env.step(
-                    action
-                )
+                    action)
                 obs = next_obs
                 done = terminated or truncated
-                if info and "episode" in info:
-                    info_item = {k: v.item() for k, v in info["episode"].items()}
-                    episode_reward = info_item["r"]
-                    episode_length = info_item["l"]
+                if info and 'episode' in info:
+                    info_item = {
+                        k: v.item()
+                        for k, v in info['episode'].items()
+                    }
+                    episode_reward = info_item['r']
+                    episode_length = info_item['l']
             eval_rewards.append(episode_reward)
             eval_steps.append(episode_length)
 
         return {
-            "reward_mean": np.mean(eval_rewards),
-            "reward_std": np.std(eval_rewards),
-            "length_mean": np.mean(eval_steps),
-            "length_std": np.std(eval_steps),
+            'reward_mean': np.mean(eval_rewards),
+            'reward_std': np.std(eval_rewards),
+            'length_mean': np.mean(eval_steps),
+            'length_std': np.std(eval_steps),
         }
 
     def run(self) -> None:
         """Run the IMPALA DQN algorithm."""
 
         self.replay_buffer = ReplayBuffer(self.buffer_size)
-        self.global_step = mp.Value("i", 0)
-        self.global_episode = mp.Value("i", 0)
+        self.global_step = mp.Value('i', 0)
+        self.global_episode = mp.Value('i', 0)
         self.local_buffer_queue = mp.Queue()
         self.local_ep_res_queue = mp.Queue()
 
@@ -457,25 +455,25 @@ class ParallelDQN:
         try:
             learner.join()
         except KeyboardInterrupt:
-            logger.info("Keyboard interrupt received, stopping all processes...")
+            logger.info(
+                'Keyboard interrupt received, stopping all processes...')
         finally:
             stop_event.set()
             for actor in actor_processes:
                 actor.join(timeout=1)  # 给予一定的时间让进程正常结束
                 if actor.is_alive():
                     logger.warning(
-                        f"Actor process {actor.pid} did not terminate, force terminating..."
+                        f'Actor process {actor.pid} did not terminate, force terminating...'
                     )
                     actor.terminate()
             learner.join(timeout=1)
             if learner.is_alive():
                 logger.warning(
-                    "Learner process did not terminate, force terminating..."
-                )
+                    'Learner process did not terminate, force terminating...')
                 learner.terminate()
-            logger.info("All processes have been stopped.")
+            logger.info('All processes have been stopped.')
 
 
-if __name__ == "__main__":
-    impala_dqn = AsyncDQN(env_name="CartPole-v0", num_actors=10)
+if __name__ == '__main__':
+    impala_dqn = ParallelDQN(env_name='CartPole-v0', num_actors=10)
     impala_dqn.run()

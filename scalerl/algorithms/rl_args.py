@@ -1,4 +1,3 @@
-import argparse
 from dataclasses import dataclass, field
 
 
@@ -147,43 +146,3 @@ class A3CArguments:
     no_shared: bool = field(
         default=False,
         metadata={'help': 'Use an optimizer without shared momentum.'})
-
-
-def parse_args() -> RLArguments:
-    """Parses command-line arguments using argparse and returns an RLArguments
-    instance.
-
-    Returns:
-        RLArguments: Populated RLArguments dataclass instance with command-line arguments.
-    """
-    parser = argparse.ArgumentParser(description='RLZero: PyTorch AI')
-
-    # Automatically populate arguments based on the RLArguments dataclass
-    for field_name, field_info in RLArguments.__dataclass_fields__.items():
-        help_msg = field_info.metadata.get('help', '')
-        field_type = type(field_info.default)
-        choices = field_info.metadata.get('choices', None)
-
-        if choices:
-            parser.add_argument(
-                f'--{field_name}',
-                type=field_type,
-                default=field_info.default,
-                choices=choices,
-                help=help_msg,
-            )
-        else:
-            parser.add_argument(
-                f'--{field_name}',
-                type=field_type,
-                default=field_info.default,
-                help=help_msg,
-            )
-
-    args = parser.parse_args()
-    return RLArguments(**vars(args))
-
-
-if __name__ == '__main__':
-    args = parse_args()
-    print(args)
