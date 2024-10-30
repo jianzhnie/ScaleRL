@@ -113,21 +113,22 @@ class DQNAgent(BaseAgent):
             next_obs = next_obs.to(self.accelerator.device)
             dones = dones.to(self.accelerator.device)
 
-        if self.args.double_dqn:  # Double Q-learning
-            greedy_action = self.actor_target(next_obs).argmax(
-                dim=1).unsqueeze(1)
-            next_q_values = (self.actor(next_obs).gather(
-                dim=1, index=greedy_action).detach())
-        else:
-            next_q_values = (self.actor_target(next_obs).detach().max(
-                axis=1)[0].unsqueeze(1))
+        with torch.no_grad():
+            if self.args.double_dqn:  # Double Q-learning
+                greedy_action = self.actor(next_obs).max(dim=1,
+                                                         keepdim=True)[1]
+                next_q_values = self.actor_target(next_obs).gather(
+                    dim=1, index=greedy_action)
+            else:
+                next_q_values = self.actor_target(next_obs).max(
+                    dim=1, keepdim=True)[0]
 
         # target, if terminal then y_j = rewards
         target_q_values = rewards + self.args.gamma * next_q_values * (1 -
                                                                        dones)
         current_q_values = self.actor(obs).gather(1, actions.long())
 
-        # loss backprop
+        # Compute loss (Mean Squared Error between current and target Q-values)
         loss = self.criterion(target_q_values, current_q_values)
         self.optimizer.zero_grad()
         if self.accelerator is not None:
