@@ -123,9 +123,14 @@ class DQNAgent(BaseAgent):
         Returns:
             np.ndarray: Computed action(s) from the network.
         """
+        obs_tensor = torch.from_numpy(obs).float()
+        if self.accelerator is None:
+            obs_tensor = obs_tensor.to(self.device)
+        else:
+            obs_tensor = obs_tensor.to(self.accelerator.device)
+        obs_tensor = obs_tensor.unsqueeze(0)
         with torch.no_grad():
-            obs = obs.unsqueeze(0)
-            action_values = self.actor(obs).cpu().data.numpy()
+            action_values = self.actor(obs_tensor).cpu().data.numpy()
             action = np.argmax(action_values, axis=-1)
         return action
 

@@ -218,12 +218,11 @@ class OffPolicyTrainer(BaseTrainer):
         episode_info = calculate_mean(episode_result_info)
         return {
             'episode_reward': mean_scores,
-            'episode_steps': self.args.rollout_length,
+            'episode_step': self.args.rollout_length,
             **episode_info,
         }
 
     def run_evaluate_episodes(self,
-                              max_steps: Optional[int] = None,
                               n_eval_episodes: int = 5) -> Dict[str, float]:
         """Evaluates the agent for a set number of episodes.
 
@@ -243,8 +242,8 @@ class OffPolicyTrainer(BaseTrainer):
             completed_episode_scores = np.zeros(num_envs)
             finished = np.zeros(num_envs)
 
-            for step in range(max_steps or float('inf')):
-                action = self.agent.predict(obs, info.get('action_mask', None))
+            while not all(finished):
+                action = self.agent.predict(obs)
                 next_obs, reward, terminated, truncated, info = self.test_env.step(
                     action)
                 scores += np.array(reward)
@@ -252,9 +251,7 @@ class OffPolicyTrainer(BaseTrainer):
                 # End episode when done or max steps reached
                 for idx, (term, trunc) in enumerate(zip(terminated,
                                                         truncated)):
-                    if (term or trunc or
-                        (max_steps
-                         and step == max_steps)) and not finished[idx]:
+                    if (term or trunc) and not finished[idx]:
                         completed_episode_scores[idx] = scores[idx]
                         finished[idx] = 1
                 if np.all(finished):
@@ -277,11 +274,14 @@ class OffPolicyTrainer(BaseTrainer):
         while self.global_step < self.args.max_timesteps:
             # Train an episode
             train_info = self.run_train_episode()
-            episode_step = train_info.get('episode_steps', 0)
+            episode_step = train_info.get('episode_step', 0)
             progress_bar.update(episode_step * self.num_envs)
+            self.episode_cnt += self.num_envs
 
             # Prepare logging information
             train_info.update({
+                'num_episode':
+                self.episode_cnt,
                 'rpm_size':
                 self.replay_buffer.size(),
                 'eps_greedy':
@@ -317,7 +317,7 @@ class OffPolicyTrainer(BaseTrainer):
                 self.episode_cnt,
                 train_info['fps'],
                 train_info['episode_reward'],
-                train_info['episode_steps'],
+                train_info['episode_step'],
             ))
         self.text_logger.info(log_message)
         self.log_train_infos(train_info, self.global_step)
