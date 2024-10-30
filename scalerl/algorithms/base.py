@@ -1,6 +1,8 @@
 from abc import ABCMeta, abstractmethod
 from typing import Any
 
+from scalerl.algorithms.rl_args import RLArguments
+
 
 class BaseAgent(metaclass=ABCMeta):
     """Abstract base class for reinforcement learning agents.
@@ -9,14 +11,13 @@ class BaseAgent(metaclass=ABCMeta):
     implement.
     """
 
-    @abstractmethod
-    def __init__(self, *args, **kwargs):
+    def __init__(self, args: RLArguments) -> None:
         """Initialize the AgentBase.
 
         This method should be overridden by subclasses to initialize the
         agent's specific architecture.
         """
-        super(BaseAgent, self).__init__()
+        self.args = args
 
     @abstractmethod
     def get_action(self, *args: Any, **kwargs: Any) -> Any:
@@ -65,6 +66,24 @@ class BaseAgent(metaclass=ABCMeta):
             Any: Value of the current state.
         """
 
+        raise NotImplementedError
+
+    def learn(self, *args: Any, **kwargs: Any) -> Any:
+        """The training interface for the agent.
+
+        This function will usually do the following things:
+
+            1. Accept numpy data as input;
+            2. Feed numpy data or onvert numpy data to tensor (optional);
+            3. Implement the learn policy.
+
+        Args:
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            Any: Result of the learning step, typically a loss value.
+        """
         raise NotImplementedError
 
     @abstractmethod

@@ -14,7 +14,7 @@ from scalerl.data.replay_buffer import (MultiStepReplayBuffer,
 from scalerl.data.replay_data import ReplayDataset
 from scalerl.data.sampler import Sampler
 from scalerl.trainer.base import BaseTrainer
-from scalerl.utils import ProgressBar, calculate_mean
+from scalerl.utils import ProgressBar, calculate_mean, get_device
 
 
 class OffPolicyTrainer(BaseTrainer):
@@ -26,7 +26,7 @@ class OffPolicyTrainer(BaseTrainer):
         test_env: gym.Env,
         agent: BaseAgent,
         accelerator: Optional[Accelerator] = None,
-        device: Optional[Union[str, torch.device]] = None,
+        device: Optional[Union[str, torch.device]] = 'auto',
     ) -> None:
         super().__init__(args, train_env, test_env, agent)
 
@@ -38,16 +38,19 @@ class OffPolicyTrainer(BaseTrainer):
             self.num_envs = 1
             self.is_vectorised = False
 
+        # Training
+        self.episode_cnt = 0
+        self.global_step = 0
+        self.start_time = time.time()
+        self.eps_greedy = 0.0
+        self.device = get_device(device)
+
         try:
             # Discrete observation space
             args.obs_dim = train_env.single_observation_space.n
-            # Requires one-hot encoding
-            args.one_hot = True
         except Exception:
             # Continuous observation space
             args.obs_dim = train_env.single_observation_space.shape
-            # Does not require one-hot encoding
-            args.one_hot = False
         try:
             # Discrete action space
             args.action_dim = train_env.single_action_space.n
@@ -55,41 +58,44 @@ class OffPolicyTrainer(BaseTrainer):
             # Continuous action space
             args.action_dim = train_env.single_action_space.shape[0]
 
-        self.agent = BaseAgent(args)
         field_names = ['obs', 'action', 'reward', 'next_obs', 'done']
 
         if self.args.per:
             self.replay_buffer = PrioritizedReplayBuffer(
-                memory_size=args.max_buffer_size,
+                memory_size=args.buffer_size,
                 field_names=field_names,
                 num_envs=self.num_envs,
                 alpha=args.alpha,
                 gamma=args.gamma,
                 device=self.device,
             )
-            if self.args.n_step:
+            if self.args.n_steps:
                 self.n_step_buffer = MultiStepReplayBuffer(
-                    memory_size=args.max_buffer_size,
+                    memory_size=args.buffer_size,
                     field_names=field_names,
                     num_envs=self.num_envs,
                     gamma=args.gamma,
                     device=self.device,
                 )
-        elif self.args.n_step:
-            self.replay_buffer = ReplayBuffer(memory_size=10000,
-                                              field_names=field_names,
-                                              device=self.device)
+        elif self.args.n_steps:
+            self.replay_buffer = ReplayBuffer(
+                memory_size=self.args.buffer_size,
+                field_names=field_names,
+                device=self.device,
+            )
             self.n_step_buffer = MultiStepReplayBuffer(
-                memory_size=args.max_buffer_size,
+                memory_size=args.buffer_size,
                 field_names=field_names,
                 num_envs=self.num_envs,
                 gamma=args.gamma,
                 device=self.device,
             )
         else:
-            self.replay_buffer = ReplayBuffer(memory_size=10000,
-                                              field_names=field_names,
-                                              device=self.device)
+            self.replay_buffer = ReplayBuffer(
+                memory_size=self.args.buffer_size,
+                field_names=field_names,
+                device=self.device,
+            )
 
         if accelerator is not None:
             # Create dataloader from replay buffer
@@ -110,13 +116,6 @@ class OffPolicyTrainer(BaseTrainer):
                 self.n_step_sampler = Sampler(distributed=False,
                                               n_step=True,
                                               memory=self.n_step_buffer)
-
-        # Training
-        self.episode_cnt = 0
-        self.global_step = 0
-        self.start_time = time.time()
-        self.eps_greedy = 0.0
-        self.device = device if device is not None else torch.device('cpu')
 
     # train an episode
     def run_train_episode(self) -> dict[str, float]:
@@ -156,16 +155,16 @@ class OffPolicyTrainer(BaseTrainer):
                 if one_step_transition:
                     self.replay_buffer.save_to_memory_vect_envs(
                         *one_step_transition)
-
-            # Save experience to replay buffer
-            self.replay_buffer.save_to_memory(
-                obs,
-                action,
-                reward,
-                next_obs,
-                terminated,
-                is_vectorised=self.is_vectorised,
-            )
+            else:
+                # Save experience to replay buffer
+                self.replay_buffer.save_to_memory(
+                    obs,
+                    action,
+                    reward,
+                    next_obs,
+                    terminated,
+                    is_vectorised=self.is_vectorised,
+                )
             # Learn according to learning frequency
             if self.replay_buffer.size() > self.args.warmup_learn_steps:
                 if self.global_step % self.args.train_frequency == 0:
@@ -196,6 +195,7 @@ class OffPolicyTrainer(BaseTrainer):
         episode_info = calculate_mean(episode_result_info)
         train_info = {
             'episode_reward': mean_scores,
+            'episode_steps': self.args.rollout_length,
         }
         train_info.update(episode_info)
         return train_info
@@ -242,10 +242,8 @@ class OffPolicyTrainer(BaseTrainer):
             # Training logic
             train_info = self.run_train_episode()
             episode_step = train_info['episode_step']
-            progress_bar.update(episode_step)
-            self.episode_cnt += 1
+            progress_bar.update(episode_step * self.num_envs)
 
-            train_info['num_episode'] = self.episode_cnt
             train_info['rpm_size'] = self.replay_buffer.size()
             train_info['eps_greedy'] = (self.agent.eps_greedy if hasattr(
                 self.agent, 'eps_greedy') else 0.0)
@@ -287,4 +285,4 @@ class OffPolicyTrainer(BaseTrainer):
 
         # Save model
         if self.args.save_model:
-            self.agent.save_model(self.model_save_dir)
+            self.agent.save_checkpoint(self.model_save_dir)

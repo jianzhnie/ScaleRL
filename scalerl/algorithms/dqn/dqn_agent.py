@@ -1,6 +1,6 @@
 import copy
 import random
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import numpy as np
 import torch
@@ -9,12 +9,14 @@ import torch.optim as optim
 from accelerate import Accelerator
 
 from scalerl.algorithms.base import BaseAgent
+from scalerl.algorithms.rl_args import DQNArguments
 from scalerl.algorithms.utils.network import QNet
+from scalerl.utils import LinearDecayScheduler
 from scalerl.utils.algo_utils import unwrap_optimizer
 from scalerl.utils.model_utils import soft_target_update
 
 
-class DQN(BaseAgent):
+class DQNAgent(BaseAgent):
     """The DQN algorithm class.
 
     DQN paper: https://arxiv.org/abs/1312.5602
@@ -22,31 +24,28 @@ class DQN(BaseAgent):
 
     def __init__(
         self,
-        obs_dim: int,
-        action_dim: int,
-        batch_size: int = 64,
-        learning_rate: float = 1e-4,
-        learn_step: int = 5,
-        gamma: float = 0.99,
-        tau: float = 1e-3,
-        double_dqn: bool = False,
-        device: str = 'cpu',
+        args: DQNArguments,
+        state_shape: Union[int, List[int]],
+        action_shape: Union[int, List[int]],
         accelerator: Optional[Accelerator] = None,
-        wrap: bool = True,
+        device: Optional[Union[str, torch.device]] = 'auto',
     ) -> None:
         """Initializes the DQN agent."""
-        super().__init__()
-        self.algo = 'DQN'
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.batch_size = batch_size
-        self.learning_rate = learning_rate
-        self.learn_step = learn_step
-        self.gamma = gamma
-        self.tau = tau
+        super().__init__(args)
+
+        self.args: DQNArguments = args
         self.device = device
         self.accelerator = accelerator
-        self.double_dqn = double_dqn
+
+        # Default to CPU if not specified
+        self.learner_update_step = 0
+        self.target_model_update_step = 0
+        self.eps_greedy = args.eps_greedy_start
+        self.learning_rate = args.learning_rate
+
+        # Flatten state and action shapes
+        self.obs_dim = int(np.prod(state_shape))
+        self.action_dim = int(np.prod(action_shape))
 
         # Create the actor network and target network
         self.actor = QNet(obs_dim=self.obs_dim, action_dim=self.action_dim)
@@ -56,118 +55,104 @@ class DQN(BaseAgent):
                                     lr=self.learning_rate)
 
         if self.accelerator is not None:
-            if wrap:
-                self.wrap_models()
+            self.wrap_models()
         else:
             self.actor = self.actor.to(self.device)
             self.actor_target = self.actor_target.to(self.device)
 
         self.criterion = nn.MSELoss()
+        # Epsilon-greedy scheduler for exploration
+        self.eps_greedy_scheduler = LinearDecayScheduler(
+            start_value=args.eps_greedy_start,
+            end_value=args.eps_greedy_end,
+            max_steps=int(args.max_timesteps * 0.8),
+        )
 
-    def get_action(
-        self,
-        state: np.ndarray,
-        epsilon: float = 0,
-        action_mask: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
+    def get_action(self, obs: np.ndarray) -> np.ndarray:
         """Returns the next action to take in the environment.
 
         Epsilon is the probability of taking a random action, used for
         exploration. For epsilon-greedy behavior, set epsilon to 0.
         """
-        state = torch.from_numpy(state).float()
+        obs = torch.from_numpy(obs).float()
         if self.accelerator is None:
-            state = state.to(self.device)
+            obs = obs.to(self.device)
         else:
-            state = state.to(self.accelerator.device)
-
-        state = state.unsqueeze(0)
-
+            obs = obs.to(self.accelerator.device)
+        obs = obs.unsqueeze(0)
         # epsilon-greedy
-        if random.random() < epsilon:
-            if action_mask is None:
-                action = np.random.randint(0, self.action_dim, size=len(state))
-            else:
-                action = np.argmax(
-                    (np.random.uniform(0, 1, (len(state), self.action_dim)) *
-                     action_mask),
-                    axis=1,
-                )
+        if random.random() < self.eps_greedy:
+            action = np.argmax(
+                np.random.uniform(0, 1, (len(obs), self.action_dim)),
+                axis=1,
+            )
         else:
-            self.actor.eval()
-            with torch.no_grad():
-                action_values = self.actor(state).cpu().data.numpy()
-            self.actor.train()
-
-            if action_mask is None:
-                action = np.argmax(action_values, axis=-1)
-            else:
-                inv_mask = 1 - action_mask
-                masked_action_values = np.ma.array(action_values,
-                                                   mask=inv_mask)
-                action = np.argmax(masked_action_values, axis=-1)
-
+            action = self.predict(obs)  # Exploit
         return action
 
-    def predict(
-        self,
-        state: np.ndarray,
-        action_mask: Optional[np.ndarray] = None,
-    ) -> np.array:
-        state = torch.from_numpy(state).float()
+    def predict(self, obs: np.ndarray) -> np.array:
+        obs = torch.from_numpy(obs).float()
         if self.accelerator is None:
-            state = state.to(self.device)
+            obs = obs.to(self.device)
         else:
-            state = state.to(self.accelerator.device)
+            obs = obs.to(self.accelerator.device)
 
-        state = state.unsqueeze(0)
+        obs = obs.unsqueeze(0)
         with torch.no_grad():
-            action_values = self.actor(state).cpu().data.numpy()
-
-        if action_mask is None:
+            action_values = self.actor(obs).cpu().data.numpy()
             action = np.argmax(action_values, axis=-1)
-        else:
-            inv_mask = 1 - action_mask
-            masked_action_values = np.ma.array(action_values, mask=inv_mask)
-            action = np.argmax(masked_action_values, axis=-1)
         return action
 
     def learn(self, experiences: List[torch.Tensor]) -> float:
         """Updates agent network parameters to learn from experiences."""
-        states, actions, rewards, next_states, dones = experiences
+        obs, actions, rewards, next_obs, dones = experiences
         if self.accelerator is not None:
-            states = states.to(self.accelerator.device)
+            obs = obs.to(self.accelerator.device)
             actions = actions.to(self.accelerator.device)
             rewards = rewards.to(self.accelerator.device)
-            next_states = next_states.to(self.accelerator.device)
+            next_obs = next_obs.to(self.accelerator.device)
             dones = dones.to(self.accelerator.device)
 
-        if self.double_dqn:  # Double Q-learning
-            q_idx = self.actor_target(next_states).argmax(dim=1).unsqueeze(1)
-            q_target = self.actor(next_states).gather(dim=1,
-                                                      index=q_idx).detach()
+        if self.args.double_dqn:  # Double Q-learning
+            greedy_action = self.actor_target(next_obs).argmax(
+                dim=1).unsqueeze(1)
+            next_q_values = (self.actor(next_obs).gather(
+                dim=1, index=greedy_action).detach())
         else:
-            q_target = (self.actor_target(next_states).detach().max(
+            next_q_values = (self.actor_target(next_obs).detach().max(
                 axis=1)[0].unsqueeze(1))
 
         # target, if terminal then y_j = rewards
-        y_j = rewards + self.gamma * q_target * (1 - dones)
-        q_eval = self.actor(states).gather(1, actions.long())
+        target_q_values = rewards + self.args.gamma * next_q_values * (1 -
+                                                                       dones)
+        current_q_values = self.actor(obs).gather(1, actions.long())
 
         # loss backprop
-        loss = self.criterion(q_eval, y_j)
+        loss = self.criterion(target_q_values, current_q_values)
         self.optimizer.zero_grad()
         if self.accelerator is not None:
             self.accelerator.backward(loss)
         else:
             loss.backward()
+        # Gradient clipping (if enabled)
+        if self.args.max_grad_norm:
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(),
+                                           self.args.max_grad_norm)
         self.optimizer.step()
 
-        # soft update target network
-        soft_target_update(src_model=self.actor,
-                           tgt_model=self.actor_target,
-                           tau=self.tau)
-        return loss.item()
+        # Soft update of the target network at regular intervals
+        if self.learner_update_step % self.args.target_update_frequency == 0:
+            soft_target_update(self.actor, self.actor_target,
+                               self.args.soft_update_tau)
+            self.target_model_update_step += 1
+
+        self.learner_update_step += 1
+
+        learn_result = {
+            'loss': loss.item(),
+        }
+        # Return the loss as a dictionary for logging
+        return learn_result
 
     def wrap_models(self) -> None:
         """Wraps models with the accelerator."""

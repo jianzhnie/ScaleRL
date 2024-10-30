@@ -9,7 +9,7 @@ from .lr_scheduler import (LinearDecayScheduler, MultiStepScheduler,
 from .model_utils import hard_target_update, soft_target_update
 from .progress_bar import DummyTqdm, ProgressBar, tqdm_config
 from .timer import Timer
-from .utils import calculate_mean
+from .utils import calculate_mean, get_device
 
 __all__ = [
     'BaseLogger',
@@ -28,4 +28,5 @@ __all__ = [
     'DummyTqdm',
     'tqdm_config',
     'calculate_mean',
+    'get_device',
 ]
