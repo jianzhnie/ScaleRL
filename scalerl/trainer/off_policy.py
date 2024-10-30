@@ -45,19 +45,6 @@ class OffPolicyTrainer(BaseTrainer):
         self.eps_greedy = 0.0
         self.device = get_device(device)
 
-        try:
-            # Discrete observation space
-            args.obs_dim = train_env.single_observation_space.n
-        except Exception:
-            # Continuous observation space
-            args.obs_dim = train_env.single_observation_space.shape
-        try:
-            # Discrete action space
-            args.action_dim = train_env.single_action_space.n
-        except Exception:
-            # Continuous action space
-            args.action_dim = train_env.single_action_space.shape[0]
-
         field_names = ['obs', 'action', 'reward', 'next_obs', 'done']
 
         if self.args.per:

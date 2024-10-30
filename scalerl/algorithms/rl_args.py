@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Optional
 
+import torch
+
 
 @dataclass
 class RLArguments:
@@ -19,6 +21,14 @@ class RLArguments:
         default=True,
         metadata={'help': 'Whether to use CUDA. Defaults to True'},
     )
+    device: str = field(
+        default='cuda' if torch.cuda.is_available() else 'cpu',
+        metadata={
+            'help':
+            'Device to use for computation. Defaults to CUDA if available, else CPU'
+        },
+    )
+
     torch_deterministic: bool = field(
         default=False,
         metadata={
@@ -80,6 +90,13 @@ class RLArguments:
     )
 
     # Hyperparameters
+    n_steps: bool = field(
+        default=False,
+        metadata={
+            'help':
+            'Use multi-step experience replay buffer, defaults to False'
+        },
+    )
     gamma: float = field(
         default=0.99,
         metadata={
@@ -128,7 +145,7 @@ class RLArguments:
         metadata={'help': 'Frequency of saving the model. Defaults to 1000'},
     )
     logger: str = field(
-        default='wandb',
+        default='tensorboard',
         metadata={
             'help': "Logger to use for recording logs. Defaults to 'wandb'"
         },
@@ -146,6 +163,13 @@ class RLArguments:
 class DQNArguments(RLArguments):
     """DQN-specific settings."""
 
+    per: bool = field(
+        default=False,
+        metadata={
+            'help':
+            'Flag indicating whether to use Prioritized Experience Replay. Defaults to False'
+        },
+    )
     hidden_dim: int = field(
         default=128,
         metadata={

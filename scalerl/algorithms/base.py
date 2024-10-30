@@ -1,4 +1,4 @@
-from abc import ABCMeta, abstractmethod
+from abc import ABCMeta
 from typing import Any
 
 from scalerl.algorithms.rl_args import RLArguments
@@ -19,7 +19,6 @@ class BaseAgent(metaclass=ABCMeta):
         """
         self.args = args
 
-    @abstractmethod
     def get_action(self, *args: Any, **kwargs: Any) -> Any:
         """Return an action with noise when given the observation of the
         environment.
@@ -38,7 +37,6 @@ class BaseAgent(metaclass=ABCMeta):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def predict(self, *args: Any, **kwargs: Any) -> Any:
         """Predict the action when given the observation of the environment.
 
@@ -53,7 +51,6 @@ class BaseAgent(metaclass=ABCMeta):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def get_value(self, args: Any, **kwargs: Any) -> Any:
         """Get the value of the current state. This method should be overridden
         by subclasses to implement the value estimation.
@@ -86,7 +83,6 @@ class BaseAgent(metaclass=ABCMeta):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def get_weights(self) -> dict:
         """Get the current weights of the agent's neural network.
 
@@ -95,7 +91,6 @@ class BaseAgent(metaclass=ABCMeta):
         """
         raise NotImplementedError('Subclasses should implement this method.')
 
-    @abstractmethod
     def set_weights(self, weights: dict) -> None:
         """Set the weights of the agent's neural network.
 
@@ -104,7 +99,6 @@ class BaseAgent(metaclass=ABCMeta):
         """
         raise NotImplementedError('Subclasses should implement this method.')
 
-    @abstractmethod
     def save_checkpoint(self, path: str) -> None:
         """Save the model to the specified directory.
 
@@ -113,7 +107,6 @@ class BaseAgent(metaclass=ABCMeta):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def load_checkpoint(self, path: str) -> None:
         """Load the model from the specified directory.
 

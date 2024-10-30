@@ -9,7 +9,7 @@ from collections import defaultdict
 from copy import deepcopy
 from enum import Enum
 from itertools import accumulate
-from typing import TypeVar
+from typing import TypeVar, Union
 
 import numpy as np
 from gymnasium import logger
@@ -448,7 +448,7 @@ class AsyncPettingZooVecEnv(PettingZooVecEnv):
         for process in self.processes:
             process.join()
 
-    def _poll_pipe_envs(self, timeout: int | None = None):
+    def _poll_pipe_envs(self, timeout: Union[int, None] = None):
         self._assert_is_running()
 
         if timeout is None:
@@ -464,7 +464,7 @@ class AsyncPettingZooVecEnv(PettingZooVecEnv):
                 return False
         return True
 
-    def _raise_if_errors(self, successes: list[bool] | tuple[bool]):
+    def _raise_if_errors(self, successes: Union[list[bool], tuple[bool]]):
         if all(successes):
             return
 
