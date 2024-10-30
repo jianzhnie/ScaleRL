@@ -35,6 +35,9 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.memory)
 
+    def size(self):
+        return len(self.memory)
+
     def _add(self, *args):
         """Adds experience to memory."""
         e = self.experience(*args)

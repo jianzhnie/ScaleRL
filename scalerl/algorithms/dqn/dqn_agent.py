@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.optim as optim
 from accelerate import Accelerator
 
-from scalerl.algorithms.base_agent import BaseAgent
+from scalerl.algorithms.base import BaseAgent
 from scalerl.algorithms.utils.network import QNet
 from scalerl.utils.algo_utils import unwrap_optimizer
 from scalerl.utils.model_utils import soft_target_update
@@ -168,44 +168,6 @@ class DQN(BaseAgent):
                            tgt_model=self.actor_target,
                            tau=self.tau)
         return loss.item()
-
-    def test(
-        self,
-        env,
-        swap_channels: bool = False,
-        max_steps: Optional[int] = None,
-        loop: int = 1,
-    ) -> float:
-        """Returns mean test score of agent in environment with epsilon-greedy
-        policy."""
-        with torch.no_grad():
-            rewards = []
-            num_envs = env.num_envs if hasattr(env, 'num_envs') else 1
-            for _ in range(loop):
-                state, info = env.reset()
-                scores = np.zeros(num_envs)
-                completed_episode_scores = np.zeros(num_envs)
-                finished = np.zeros(num_envs)
-                step = 0
-                while not np.all(finished):
-                    if swap_channels:
-                        state = np.moveaxis(state, [-1], [-3])
-                    action_mask = info.get('action_mask', None)
-                    action = self.get_action(state,
-                                             epsilon=0,
-                                             action_mask=action_mask)
-                    state, reward, done, trunc, info = env.step(action)
-                    step += 1
-                    scores += np.array(reward)
-                    for idx, (d, t) in enumerate(zip(done, trunc)):
-                        if (d or t or
-                            (max_steps is not None
-                             and step == max_steps)) and not finished[idx]:
-                            completed_episode_scores[idx] = scores[idx]
-                            finished[idx] = 1
-                rewards.append(np.mean(completed_episode_scores))
-        mean_fit = np.mean(rewards)
-        return mean_fit
 
     def wrap_models(self) -> None:
         """Wraps models with the accelerator."""
