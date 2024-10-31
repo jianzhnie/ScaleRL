@@ -83,9 +83,9 @@ class RLArguments:
         },
     )
     rollout_length: int = field(
-        default=100, metadata={'help': 'The rollout length (time dimension)'})
+        default=200, metadata={'help': 'The rollout length (time dimension)'})
     eval_episodes: int = field(
-        default=10,
+        default=3,
         metadata={'help': 'Number of episodes to evaluate. Defaults to 10'},
     )
 
@@ -131,11 +131,11 @@ class RLArguments:
         },
     )
     train_log_interval: int = field(
-        default=5,
+        default=100,
         metadata={'help': 'Logging interval during training. Defaults to 10'},
     )
     test_log_interval: int = field(
-        default=10,
+        default=500,
         metadata={
             'help': 'Logging interval during evaluation. Defaults to 20'
         },

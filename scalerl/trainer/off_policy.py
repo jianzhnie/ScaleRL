@@ -322,11 +322,11 @@ class OffPolicyTrainer(BaseTrainer):
             })
 
             # Log training information at specified intervals
-            if self.episode_cnt % self.args.train_log_interval == 0:
+            if self.global_step % self.args.train_log_interval == 0:
                 self.log_training_info(train_info)
 
             # Log evaluation information at specified intervals
-            if self.episode_cnt % self.args.test_log_interval == 0:
+            if self.global_step % self.args.test_log_interval == 0:
                 self.log_evaluation_info()
 
         # Save the model if specified
