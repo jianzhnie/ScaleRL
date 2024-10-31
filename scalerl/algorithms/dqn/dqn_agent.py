@@ -96,14 +96,6 @@ class DQNAgent(BaseAgent):
         Returns:
             np.ndarray: The chosen action(s) based on epsilon-greedy exploration.
         """
-        obs_tensor = torch.from_numpy(obs).float()
-        if self.accelerator is None:
-            obs_tensor = obs_tensor.to(self.device)
-        else:
-            obs_tensor = obs_tensor.to(self.accelerator.device)
-
-        obs_tensor = obs_tensor.unsqueeze(0)
-
         if random.random() < self.eps_greedy:
             # Random action for exploration
             action = np.argmax(np.random.uniform(0, 1,
@@ -111,10 +103,10 @@ class DQNAgent(BaseAgent):
                                axis=1)
         else:
             # Exploitative action from Q-network
-            action = self.predict(obs_tensor)
+            action = self.predict(obs)
         return action
 
-    def predict(self, obs: torch.Tensor) -> np.ndarray:
+    def predict(self, obs: np.array) -> np.ndarray:
         """Computes action from the Q-network.
 
         Args:
@@ -128,7 +120,9 @@ class DQNAgent(BaseAgent):
             obs_tensor = obs_tensor.to(self.device)
         else:
             obs_tensor = obs_tensor.to(self.accelerator.device)
-        obs_tensor = obs_tensor.unsqueeze(0)
+
+        if len(obs_tensor.size()) < 2:
+            obs_tensor = obs_tensor.unsqueeze(0)
         with torch.no_grad():
             action_values = self.actor(obs_tensor).cpu().data.numpy()
             action = np.argmax(action_values, axis=-1)
@@ -147,7 +141,7 @@ class DQNAgent(BaseAgent):
         if self.accelerator is not None:
             obs, actions, rewards, next_obs, dones = (
                 obs.to(self.accelerator.device),
-                actions.to(self.accelerator.device),
+                actions.to(self.accelerator.device, dtype=torch.long),
                 rewards.to(self.accelerator.device),
                 next_obs.to(self.accelerator.device),
                 dones.to(self.accelerator.device),

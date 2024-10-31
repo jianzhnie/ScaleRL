@@ -44,7 +44,7 @@ class RLArguments:
     )
     # Environment specific settings
     env_id: str = field(
-        default='CartPole-v1',
+        default='CartPole-v0',
         metadata={'help': 'Environment ID (default: CartPole-v1)'},
     )
     num_envs: int = field(

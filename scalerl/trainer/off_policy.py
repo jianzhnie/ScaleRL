@@ -234,12 +234,14 @@ class OffPolicyTrainer(BaseTrainer):
             Dict[str, float]: Evaluation results.
         """
         eval_rewards = []
+        eval_lengths = []
         num_envs = getattr(self.test_env, 'num_envs', 1)
 
         for _ in range(n_eval_episodes):
             obs, info = self.test_env.reset()
             scores = np.zeros(num_envs)
             completed_episode_scores = np.zeros(num_envs)
+            episode_len = np.zeros(num_envs)
             finished = np.zeros(num_envs)
 
             while not all(finished):
@@ -247,7 +249,8 @@ class OffPolicyTrainer(BaseTrainer):
                 next_obs, reward, terminated, truncated, info = self.test_env.step(
                     action)
                 scores += np.array(reward)
-
+                done = np.logical_or(terminated, truncated)
+                episode_len[~done] += 1
                 # End episode when done or max steps reached
                 for idx, (term, trunc) in enumerate(zip(terminated,
                                                         truncated)):
@@ -260,19 +263,31 @@ class OffPolicyTrainer(BaseTrainer):
                 obs = next_obs
 
             eval_rewards.append(np.mean(completed_episode_scores))
+            eval_lengths.append(np.mean(episode_len))
 
         return {
             'reward_mean': np.mean(eval_rewards),
             'reward_std': np.std(eval_rewards),
+            'length_mean': np.mean(eval_lengths),
+            'length_std': np.std(eval_lengths),
         }
 
     def run(self) -> None:
         """Starts the training process."""
         self.text_logger.info('Start Training')
-        progress_bar = ProgressBar(self.args.max_timesteps)
+
+        if self.accelerator is not None:
+            self.accelerator.wait_for_everyone()
+            if self.accelerator.is_main_process:
+                progress_bar = ProgressBar(self.args.max_timesteps)
+        else:
+            progress_bar = ProgressBar(self.args.max_timesteps)
 
         while self.global_step < self.args.max_timesteps:
             # Train an episode
+            if self.accelerator is not None:
+                self.accelerator.wait_for_everyone()
+
             train_info = self.run_train_episode()
             episode_step = train_info.get('episode_step', 0)
             progress_bar.update(episode_step * self.num_envs)
@@ -298,17 +313,17 @@ class OffPolicyTrainer(BaseTrainer):
 
             # Log training information at specified intervals
             if self.episode_cnt % self.args.train_log_interval == 0:
-                self._log_training_info(train_info)
+                self.log_training_info(train_info)
 
             # Log evaluation information at specified intervals
             if self.episode_cnt % self.args.test_log_interval == 0:
-                self._log_evaluation_info()
+                self.log_evaluation_info()
 
         # Save the model if specified
         if self.args.save_model:
             self.agent.save_checkpoint(self.model_save_dir)
 
-    def _log_training_info(self, train_info: Dict[str, Any]) -> None:
+    def log_training_info(self, train_info: Dict[str, Any]) -> None:
         """Logs training information."""
         log_message = (
             '[Train], global_step: {}, episodes: {}, train_fps: {}, '
@@ -322,7 +337,7 @@ class OffPolicyTrainer(BaseTrainer):
         self.text_logger.info(log_message)
         self.log_train_infos(train_info, self.global_step)
 
-    def _log_evaluation_info(self) -> None:
+    def log_evaluation_info(self) -> None:
         """Logs evaluation information."""
         test_info = self.run_evaluate_episodes(
             n_eval_episodes=self.args.eval_episodes)
