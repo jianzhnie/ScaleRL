@@ -22,7 +22,6 @@ if __name__ == '__main__':
     train_env: gym.Env = make_vect_envs(args.env_id, num_envs=args.num_envs)
     test_env: gym.Env = make_vect_envs(args.env_id, num_envs=args.num_envs)
 
-    print(train_env)
     state_shape = (train_env.single_observation_space.shape
                    or train_env.single_observation_space.n)
     action_shape = (train_env.single_action_space.shape
@@ -59,8 +58,4 @@ if __name__ == '__main__':
         accelerator=accelerator,
         device=args.device,
     )
-
-    accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        print('===== AgileRL Online Distributed Demo =====')
-    accelerator.wait_for_everyone()
+    runner.run()
