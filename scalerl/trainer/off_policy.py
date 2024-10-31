@@ -149,10 +149,13 @@ class OffPolicyTrainer(BaseTrainer):
         Returns:
             Dict[str, float]: Metrics for the episode.
         """
-        obs, info = self.train_env.reset()
+        episode_returns = np.zeros(self.num_envs)  # 记录每个环境的累积奖励（return）
+        episode_lengths = np.zeros(self.num_envs)  # 记录每个环境的步数
+        completed_returns = []  # 存储每局完成的return
+        completed_lengths = []  # 存储每局完成的步数
         episode_result_info = []
-        end = False
-        while not end:
+        obs, info = self.train_env.reset()
+        for _ in range(self.args.rollout_length):
             # Agent action
             action = self.agent.get_action(obs)
             action = action[0] if not self.is_vectorised else action
@@ -166,7 +169,21 @@ class OffPolicyTrainer(BaseTrainer):
                 break  # Exit on error
 
             done = np.logical_or(terminated, truncated)
-            end = terminated.any() or truncated.any()
+
+            # 累积奖励和步数
+            episode_returns += reward
+            episode_lengths += 1
+
+            # 检查每个环境是否终止
+            for i in range(self.num_envs):
+                if terminated[i] or truncated[i]:  # 判断一局是否结束
+                    completed_returns.append(
+                        episode_returns[i])  # 记录完成局的 return
+                    completed_lengths.append(episode_lengths[i])  # 记录完成局的步数
+
+                    # 重置统计变量
+                    episode_returns[i] = 0
+                    episode_lengths[i] = 0
 
             # Save experiences to buffer
             if self.n_step_buffer:
@@ -204,28 +221,14 @@ class OffPolicyTrainer(BaseTrainer):
 
             obs = next_obs
 
-        assert (
-            'episode'
-            in info), 'Please wrapper the env with `RecordEpisodeStatistics`'
-        if info and 'episode' in info:
-            episode_reward = info['episode']['r']
-            episode_step = info['episode']['l']
-            episode_time = info['episode']['t']
-
-        vec_env_steps = np.sum(episode_step)
-        episode_cnt = (episode_step > 0).sum()
-        self.global_step += vec_env_steps
-        mean_episode_reward = np.mean(episode_reward[done])
-        mean_episode_time = np.mean(episode_time[done])
-        mean_episode_length = np.mean(episode_step[done])
+        mean_episode_reward = np.mean(completed_returns)
+        mean_episode_length = np.mean(completed_lengths)
         episode_info = calculate_mean(episode_result_info)
-
+        episode_cnt = len(completed_lengths)
         return {
-            'vec_env_steps': vec_env_steps,
             'episode_cnt': episode_cnt,
             'episode_reward': mean_episode_reward,
             'episode_step': mean_episode_length,
-            'episode_time': mean_episode_time,
             **episode_info,
         }
 
@@ -242,34 +245,34 @@ class OffPolicyTrainer(BaseTrainer):
         """
         eval_rewards = []
         eval_lengths = []
-        eval_times = []
-        num_envs = self.test_env.num_envs if hasattr(self.test_env,
-                                                     'num_envs') else 1
 
+        num_test_envs = (self.test_env.num_envs if hasattr(
+            self.test_env, 'num_envs') else 1)
         for _ in range(n_eval_episodes):
             obs, info = self.test_env.reset()
-            finished = np.zeros(num_envs)
+            episode_returns = np.zeros(num_test_envs)  # 记录每个环境的累积奖励（return）
+            episode_lengths = np.zeros(num_test_envs)  # 记录每个环境的步数
+            completed_returns = np.zeros(num_test_envs)  # 存储每局完成的return
+            completed_lengths = np.zeros(num_test_envs)  # 存储每局完成的步数
+            finished = np.zeros(num_test_envs)
             while not np.all(finished):
                 action = self.agent.predict(obs)
                 obs, reward, terminated, truncated, info = self.test_env.step(
                     action)
+
+                # 累积奖励和步数
+                episode_returns += reward
+                episode_lengths += 1
                 # End episode when done or max steps reached
                 for idx, (term, trunc) in enumerate(zip(terminated,
                                                         truncated)):
                     if term or trunc and not finished[idx]:
                         finished[idx] = 1
+                        completed_returns[idx] = episode_returns[idx]
+                        completed_lengths[idx] = episode_lengths[idx]
 
-            assert ('episode' in info
-                    ), 'Please wrapper the env with `RecordEpisodeStatistics`'
-            if info and 'episode' in info:
-                episode_reward = info['episode']['r']
-                episode_step = info['episode']['l']
-                episode_time = info['episode']['t']
-
-            done_idx = episode_reward > 0
-            eval_rewards.append(np.mean(episode_reward[done_idx]))
-            eval_lengths.append(np.mean(episode_step[done_idx]))
-            eval_times.append(np.mean(episode_time[done_idx]))
+            eval_rewards.append(np.mean(completed_returns))
+            eval_lengths.append(np.mean(completed_lengths))
 
         return {
             'reward_mean': np.mean(eval_rewards),
@@ -295,7 +298,9 @@ class OffPolicyTrainer(BaseTrainer):
                 self.accelerator.wait_for_everyone()
 
             train_info = self.run_train_episode()
-            progress_bar.update(train_info['vec_env_steps'])
+            env_steps = self.args.rollout_length * self.num_envs
+            self.global_step += env_steps
+            progress_bar.update(env_steps)
             self.episode_cnt += train_info['episode_cnt']
 
             # Prepare logging information
