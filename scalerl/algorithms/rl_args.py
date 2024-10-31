@@ -48,7 +48,7 @@ class RLArguments:
         metadata={'help': 'Environment ID (default: CartPole-v1)'},
     )
     num_envs: int = field(
-        default=10,
+        default=4,
         metadata={
             'help':
             'Number of parallel environments to run for collecting experiences. Defaults to 10'

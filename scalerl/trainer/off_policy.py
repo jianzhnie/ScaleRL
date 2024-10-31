@@ -214,7 +214,7 @@ class OffPolicyTrainer(BaseTrainer):
                             experiences[5])
                         experiences += n_step_experiences
                         learn_result = self.agent.learn(
-                            experiences, n_step=self.args.n_step)
+                            experiences, n_step=self.args.n_steps)
                     else:
                         learn_result = self.agent.learn(experiences)
                     episode_result_info.append(learn_result)
