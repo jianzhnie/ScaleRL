@@ -12,12 +12,9 @@ from scalerl.algorithms.rl_args import DQNArguments
 from scalerl.envs.env_utils import make_vect_envs
 from scalerl.trainer.off_policy import OffPolicyTrainer
 from scalerl.utils import get_device
-from scalerl.utils.logger.logging import get_logger
 
 if __name__ == '__main__':
-    logger = get_logger(__name__)
     accelerator = Accelerator()
-
     args: DQNArguments = tyro.cli(DQNArguments)
     train_env: gym.Env = make_vect_envs(args.env_id, num_envs=args.num_envs)
     test_env: gym.Env = make_vect_envs(args.env_id, num_envs=args.num_envs)
@@ -31,16 +28,16 @@ if __name__ == '__main__':
         train_env.action_space, gym.spaces.Box) else None)
 
     args.device = get_device(args.device)
-
-    print('---------------------------------------')
-    print('Environment:', args.env_id)
-    print('Algorithm:', args.algo_name)
-    print('State Shape:', state_shape)
-    print('Action Shape:', action_shape)
-    print('Action Bound:', args.action_bound)
-    print('Device:', args.device)
-    print('---------------------------------------')
-    print(args)
+    if accelerator is None or accelerator.is_main_process:
+        print('---------------------------------------')
+        print('Environment:', args.env_id)
+        print('Algorithm:', args.algo_name)
+        print('State Shape:', state_shape)
+        print('Action Shape:', action_shape)
+        print('Action Bound:', args.action_bound)
+        print('Device:', args.device)
+        print('---------------------------------------')
+        print(args)
 
     # agent
     agent = DQNAgent(

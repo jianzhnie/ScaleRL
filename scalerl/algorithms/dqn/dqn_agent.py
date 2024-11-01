@@ -104,6 +104,11 @@ class DQNAgent(BaseAgent):
         else:
             # Exploitative action from Q-network
             action = self.predict(obs)
+
+        # Decay epsilon over time
+        self.eps_greedy = max(self.eps_greedy_scheduler.step(),
+                              self.args.eps_greedy_end)
+
         return action
 
     def predict(self, obs: np.array) -> np.ndarray:
