@@ -5,7 +5,7 @@ Provides common functionality for training and testing RL agents.
 
 import os
 import time
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import asdict
 from typing import Dict, Optional, Union
 
@@ -140,7 +140,6 @@ class BaseTrainer(ABC):
         if self.accelerator is not None:
             self.accelerator.wait_for_everyone()
 
-    @abstractmethod
     def run_train_episode(self) -> LogInfo:
         """Run a single training episode.
 
@@ -149,7 +148,6 @@ class BaseTrainer(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def run_test_episode(self) -> LogInfo:
         """Run a single test episode.
 
@@ -158,7 +156,6 @@ class BaseTrainer(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def run(self) -> None:
         """Run the complete training process."""
         raise NotImplementedError

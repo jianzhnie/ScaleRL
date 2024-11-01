@@ -13,12 +13,19 @@ from scalerl.data.replay_buffer import (MultiStepReplayBuffer,
                                         PrioritizedReplayBuffer, ReplayBuffer)
 from scalerl.data.replay_data import ReplayDataset
 from scalerl.data.sampler import Sampler
+from scalerl.envs.env_utils import EpisodeMetrics
 from scalerl.trainer.base import BaseTrainer
 from scalerl.utils import ProgressBar, calculate_mean
 
 
 class OffPolicyTrainer(BaseTrainer):
     """Trainer class for off-policy reinforcement learning algorithms.
+
+    This trainer handles:
+    - Experience collection and storage
+    - Replay buffer management (including prioritized and n-step variants)
+    - Training loop execution with distributed support
+    - Evaluation and logging
 
     Attributes:
         replay_buffer: Stores past experiences for sampling and learning.
@@ -50,30 +57,31 @@ class OffPolicyTrainer(BaseTrainer):
 
         # Environment configurations
         self.num_envs = getattr(train_env, 'num_envs', 1)
+        self.num_test_envs = getattr(test_env, 'num_envs', 1)
         self.is_vectorised = hasattr(train_env, 'num_envs')
+        self.device = device
 
         # Training state
         self.episode_cnt = 0
         self.global_step = 0
         self.start_time = time.time()
-        self.device = device
+        self.args: RLArguments = args
 
-        # Replay buffer setup
-        field_names = ['obs', 'action', 'reward', 'next_obs', 'done']
-        self._initialize_replay_buffers(field_names)
+        # Initialize metrics trackers
+        self.train_metrics = EpisodeMetrics(self.num_envs)
+        self.eval_metrics = EpisodeMetrics(self.num_test_envs)
 
+        # Setup replay buffers and samplers
+        self._setup_replay_buffers()
         # Initialize sampling setup based on the use of accelerator
-        self.data_sampler, self.n_step_sampler = self._initialize_samplers(
-            accelerator)
+        self.data_sampler, self.n_step_sampler = self._setup_samplers()
 
-    def _initialize_replay_buffers(self, field_names: list) -> None:
-        """Initializes the appropriate replay buffer(s) based on training
-        arguments."""
-        self.replay_buffer = None
-        self.n_step_buffer = None
+    def _setup_replay_buffers(self) -> None:
+        """Initialize replay buffers and samplers."""
+        field_names = ['obs', 'action', 'reward', 'next_obs', 'done']
 
+        # Initialize replay buffers
         if self.args.per:
-            # Prioritized Experience Replay
             self.replay_buffer = PrioritizedReplayBuffer(
                 memory_size=self.args.buffer_size,
                 field_names=field_names,
@@ -82,40 +90,23 @@ class OffPolicyTrainer(BaseTrainer):
                 gamma=self.args.gamma,
                 device=self.device,
             )
-            if self.args.n_steps:
-                # Multi-step buffer for n-step learning
-                self.n_step_buffer = MultiStepReplayBuffer(
-                    memory_size=self.args.buffer_size,
-                    field_names=field_names,
-                    num_envs=self.num_envs,
-                    gamma=self.args.gamma,
-                    device=self.device,
-                )
-        elif self.args.n_steps:
-            # Regular Replay with n-step buffer
-            self.replay_buffer = ReplayBuffer(
-                memory_size=self.args.buffer_size,
-                field_names=field_names,
-                device=self.device,
-            )
-            self.n_step_buffer = MultiStepReplayBuffer(
-                memory_size=self.args.buffer_size,
-                field_names=field_names,
-                num_envs=self.num_envs,
-                gamma=self.args.gamma,
-                device=self.device,
-            )
         else:
-            # Regular Replay Buffer without n-steps
             self.replay_buffer = ReplayBuffer(
                 memory_size=self.args.buffer_size,
                 field_names=field_names,
                 device=self.device,
             )
 
-    def _initialize_samplers(
-        self, accelerator: Optional[Accelerator]
-    ) -> tuple[Sampler, Optional[Sampler]]:
+        # Setup n-step buffer if needed
+        self.n_step_buffer = (MultiStepReplayBuffer(
+            memory_size=self.args.buffer_size,
+            field_names=field_names,
+            num_envs=self.num_envs,
+            gamma=self.args.gamma,
+            device=self.device,
+        ) if self.args.n_steps else None)
+
+    def _setup_samplers(self) -> tuple[Sampler, Optional[Sampler]]:
         """Initializes samplers for data collection and training.
 
         Args:
@@ -124,24 +115,72 @@ class OffPolicyTrainer(BaseTrainer):
         Returns:
             tuple[Sampler, Optional[Sampler]]: Main sampler and optional n-step sampler.
         """
-        if accelerator:
+        if self.accelerator:
             # Distributed sampler with accelerator support
             replay_dataset = ReplayDataset(self.replay_buffer,
                                            batch_size=self.args.batch_size)
             replay_dataloader = DataLoader(replay_dataset, batch_size=None)
-            replay_dataloader = accelerator.prepare(replay_dataloader)
+            replay_dataloader = self.accelerator.prepare(replay_dataloader)
             return Sampler(distributed=True,
                            dataset=replay_dataset,
                            dataloader=replay_dataloader), None
+
+        # Non-distributed sampler setup
+        main_sampler = Sampler(distributed=False,
+                               per=self.args.per,
+                               memory=self.replay_buffer)
+        n_step_sampler = (Sampler(
+            distributed=False, n_step=True, memory=self.n_step_buffer)
+                          if self.n_step_buffer else None)
+        return main_sampler, n_step_sampler
+
+    def store_experience(
+        self,
+        obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        next_obs: np.ndarray,
+        done: np.ndarray,
+    ) -> None:
+        """Process and store experience in replay buffer."""
+        if self.n_step_buffer:
+            transition = self.n_step_buffer.save_to_memory_vect_envs(
+                obs, action, reward, next_obs, done)
+            if transition:
+                self.replay_buffer.save_to_memory_vect_envs(*transition)
         else:
-            # Non-distributed sampler setup
-            main_sampler = Sampler(distributed=False,
-                                   per=self.args.per,
-                                   memory=self.replay_buffer)
-            n_step_sampler = (Sampler(
-                distributed=False, n_step=True, memory=self.n_step_buffer)
-                              if self.n_step_buffer else None)
-            return main_sampler, n_step_sampler
+            self.replay_buffer.save_to_memory(
+                obs,
+                action,
+                reward,
+                next_obs,
+                done,
+                is_vectorised=self.is_vectorised,
+            )
+
+    def train_step(self) -> Optional[Dict[str, float]]:
+        """Perform a single training step if conditions are met."""
+        if (self.replay_buffer.size() <= self.args.warmup_learn_steps
+                or self.global_step % self.args.train_frequency != 0):
+            return None
+
+        learn_results = []
+        for _ in range(self.num_envs // self.args.learn_steps):
+            experiences = self.data_sampler.sample(self.args.batch_size,
+                                                   return_idx=bool(
+                                                       self.n_step_buffer))
+
+            if self.n_step_buffer:
+                n_step_experiences = self.n_step_sampler.sample(experiences[5])
+                experiences += n_step_experiences
+                result = self.agent.learn(experiences,
+                                          n_step=self.args.n_steps)
+            else:
+                result = self.agent.learn(experiences)
+
+            learn_results.append(result)
+
+        return calculate_mean(learn_results) if learn_results else None
 
     def run_train_episode(self) -> Dict[str, float]:
         """Executes a single training episode.
@@ -149,11 +188,7 @@ class OffPolicyTrainer(BaseTrainer):
         Returns:
             Dict[str, float]: Metrics for the episode.
         """
-        episode_returns = np.zeros(self.num_envs)  # 记录每个环境的累积奖励（return）
-        episode_lengths = np.zeros(self.num_envs)  # 记录每个环境的步数
-        completed_returns = []  # 存储每局完成的return
-        completed_lengths = []  # 存储每局完成的步数
-        episode_result_info = []
+        episode_results = []
         obs, info = self.train_env.reset()
         for _ in range(self.args.rollout_length):
             # Agent action
@@ -169,68 +204,22 @@ class OffPolicyTrainer(BaseTrainer):
                 break  # Exit on error
 
             done = np.logical_or(terminated, truncated)
-
-            # 累积奖励和步数
-            episode_returns += reward
-            episode_lengths += 1
-
-            # 检查每个环境是否终止
-            for i in range(self.num_envs):
-                if terminated[i] or truncated[i]:  # 判断一局是否结束
-                    completed_returns.append(
-                        episode_returns[i])  # 记录完成局的 return
-                    completed_lengths.append(episode_lengths[i])  # 记录完成局的步数
-
-                    # 重置统计变量
-                    episode_returns[i] = 0
-                    episode_lengths[i] = 0
+            # Update metrics
+            self.train_metrics.update(reward, terminated, truncated)
 
             # Save experiences to buffer
-            if self.n_step_buffer:
-                one_step_transition = self.n_step_buffer.save_to_memory_vect_envs(
-                    obs, action, reward, next_obs, done)
-                if one_step_transition:
-                    self.replay_buffer.save_to_memory_vect_envs(
-                        *one_step_transition)
-            else:
-                self.replay_buffer.save_to_memory(
-                    obs,
-                    action,
-                    reward,
-                    next_obs,
-                    done,
-                    is_vectorised=self.is_vectorised,
-                )
-
-            # Training step
-            if (self.replay_buffer.size() > self.args.warmup_learn_steps
-                    and self.global_step % self.args.train_frequency == 0):
-                for _ in range(self.num_envs // self.args.learn_steps):
-                    experiences = self.data_sampler.sample(
-                        self.args.batch_size,
-                        return_idx=bool(self.n_step_buffer))
-                    if self.n_step_buffer:
-                        n_step_experiences = self.n_step_sampler.sample(
-                            experiences[5])
-                        experiences += n_step_experiences
-                        learn_result = self.agent.learn(
-                            experiences, n_step=self.args.n_steps)
-                    else:
-                        learn_result = self.agent.learn(experiences)
-                    episode_result_info.append(learn_result)
+            self.store_experience(obs, action, reward, next_obs, done)
 
             obs = next_obs
+            # Training step
+            if result := self.train_step():
+                episode_results.append(result)
 
-        mean_episode_reward = np.mean(completed_returns)
-        mean_episode_length = np.mean(completed_lengths)
-        episode_info = calculate_mean(episode_result_info)
-        episode_cnt = len(completed_lengths)
-        return {
-            'episode_cnt': episode_cnt,
-            'episode_reward': mean_episode_reward,
-            'episode_step': mean_episode_length,
-            **episode_info,
-        }
+        metrics = self.train_metrics.get_episode_info()
+        if episode_results:
+            metrics.update(calculate_mean(episode_results))
+
+        return metrics
 
     def run_evaluate_episodes(self,
                               n_eval_episodes: int = 5) -> Dict[str, float]:
@@ -243,43 +232,24 @@ class OffPolicyTrainer(BaseTrainer):
         Returns:
             Dict[str, float]: Evaluation results.
         """
-        eval_rewards = []
-        eval_lengths = []
-
-        num_test_envs = (self.test_env.num_envs if hasattr(
-            self.test_env, 'num_envs') else 1)
+        eval_results = []
         for _ in range(n_eval_episodes):
             obs, info = self.test_env.reset()
-            episode_returns = np.zeros(num_test_envs)  # 记录每个环境的累积奖励（return）
-            episode_lengths = np.zeros(num_test_envs)  # 记录每个环境的步数
-            completed_returns = np.zeros(num_test_envs)  # 存储每局完成的return
-            completed_lengths = np.zeros(num_test_envs)  # 存储每局完成的步数
-            finished = np.zeros(num_test_envs)
+            self.eval_metrics.reset()
+            finished = np.zeros(self.num_test_envs, dtype=bool)
             while not np.all(finished):
                 action = self.agent.predict(obs)
                 obs, reward, terminated, truncated, info = self.test_env.step(
                     action)
 
-                # 累积奖励和步数
-                episode_returns += reward
-                episode_lengths += 1
-                # End episode when done or max steps reached
-                for idx, (term, trunc) in enumerate(zip(terminated,
-                                                        truncated)):
-                    if term or trunc and not finished[idx]:
-                        finished[idx] = 1
-                        completed_returns[idx] = episode_returns[idx]
-                        completed_lengths[idx] = episode_lengths[idx]
-
-            eval_rewards.append(np.mean(completed_returns))
-            eval_lengths.append(np.mean(completed_lengths))
-
-        return {
-            'reward_mean': np.mean(eval_rewards),
-            'reward_std': np.std(eval_rewards),
-            'length_mean': np.mean(eval_lengths),
-            'length_std': np.std(eval_lengths),
-        }
+                self.eval_metrics.update(reward, terminated, truncated)
+                done = np.logical_or(terminated, truncated)
+                for i in range(self.num_test_envs):
+                    if done[i] and not finished[i]:
+                        finished[i] = True
+            metrics = self.eval_metrics.get_episode_info()
+            eval_results.append(metrics)
+        return calculate_mean(eval_results) if eval_results else None
 
     def run(self) -> None:
         """Starts the training process."""
@@ -300,7 +270,8 @@ class OffPolicyTrainer(BaseTrainer):
             train_info = self.run_train_episode()
             env_steps = self.args.rollout_length * self.num_envs
             self.global_step += env_steps
-            progress_bar.update(env_steps)
+            if progress_bar:
+                progress_bar.update(env_steps)
             self.episode_cnt += train_info['episode_cnt']
 
             # Prepare logging information
@@ -335,15 +306,11 @@ class OffPolicyTrainer(BaseTrainer):
 
     def log_training_info(self, train_info: Dict[str, Any]) -> None:
         """Logs training information."""
-        log_message = (
-            '[Train], global_step: {}, episodes: {}, train_fps: {}, '
-            'episode_reward: {:.2f}, episode_steps: {:.2f}'.format(
-                self.global_step,
-                self.episode_cnt,
-                train_info['fps'],
-                train_info['episode_reward'],
-                train_info['episode_step'],
-            ))
+        log_message = (f'[Train] Step: {self.global_step}, '
+                       f'Episodes: {self.train_metrics.episode_count}, '
+                       f'FPS: {train_info["fps"]}, '
+                       f'Episode Reward: {train_info["episode_reward"]:.2f}, '
+                       f'Episode Length :{train_info["episode_length"]} ')
         self.text_logger.info(log_message)
         self.log_train_infos(train_info, self.global_step)
 
@@ -352,9 +319,9 @@ class OffPolicyTrainer(BaseTrainer):
         test_info = self.run_evaluate_episodes(
             n_eval_episodes=self.args.eval_episodes)
         test_info['num_episode'] = self.episode_cnt
-        log_message = (
-            '[Eval], global_step: {}, episode: {}, eval_rewards: {:.2f}'.
-            format(self.global_step, self.episode_cnt,
-                   test_info['reward_mean']))
+        log_message = (f'[Eval] Step: {self.global_step}, '
+                       f'Episodes: {self.train_metrics.episode_count}, '
+                       f'Episode Reward: {test_info["episode_reward"]:.2f}, '
+                       f'Episode Length :{test_info["episode_length"]} ')
         self.text_logger.info(log_message)
         self.log_test_infos(test_info, self.global_step)
