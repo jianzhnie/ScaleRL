@@ -254,11 +254,7 @@ class OffPolicyTrainer(BaseTrainer):
         if self._is_main_process():
             self.text_logger.info('Start Training')
 
-        if self.accelerator is not None:
-            self.accelerator.wait_for_everyone()
-            if self.accelerator.is_main_process:
-                progress_bar = ProgressBar(self.args.max_timesteps)
-        else:
+        if self._is_main_process():
             progress_bar = ProgressBar(self.args.max_timesteps)
 
         while self.global_step < self.args.max_timesteps:
