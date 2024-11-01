@@ -77,7 +77,7 @@ class RLArguments:
     )
     # Training parameters
     max_timesteps: int = field(
-        default=12000,
+        default=30000,
         metadata={
             'help': 'Maximum number of training steps. Defaults to 12000'
         },
@@ -85,7 +85,7 @@ class RLArguments:
     rollout_length: int = field(
         default=200, metadata={'help': 'The rollout length (time dimension)'})
     eval_episodes: int = field(
-        default=3,
+        default=5,
         metadata={'help': 'Number of episodes to evaluate. Defaults to 10'},
     )
 

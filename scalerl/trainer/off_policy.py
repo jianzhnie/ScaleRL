@@ -8,7 +8,7 @@ from accelerate import Accelerator
 from torch.utils.data import DataLoader
 
 from scalerl.algorithms.base import BaseAgent
-from scalerl.algorithms.rl_args import RLArguments
+from scalerl.algorithms.rl_args import DQNArguments, RLArguments
 from scalerl.data.replay_buffer import (MultiStepReplayBuffer,
                                         PrioritizedReplayBuffer, ReplayBuffer)
 from scalerl.data.replay_data import ReplayDataset
@@ -65,7 +65,7 @@ class OffPolicyTrainer(BaseTrainer):
         self.episode_cnt = 0
         self.global_step = 0
         self.start_time = time.time()
-        self.args: RLArguments = args
+        self.args: DQNArguments = args
 
         # Initialize metrics trackers
         self.train_metrics = EpisodeMetrics(self.num_envs)
@@ -165,7 +165,7 @@ class OffPolicyTrainer(BaseTrainer):
             return None
 
         learn_results = []
-        for _ in range(self.num_envs // self.args.learn_steps):
+        for _ in range(self.args.learn_steps):
             experiences = self.data_sampler.sample(self.args.batch_size,
                                                    return_idx=bool(
                                                        self.n_step_buffer))
@@ -307,6 +307,7 @@ class OffPolicyTrainer(BaseTrainer):
 
     def log_training_info(self, train_info: Dict[str, Any]) -> None:
         """Logs training information."""
+
         log_message = (f'[Train] Step: {self.global_step}, '
                        f'Episodes: {train_info["num_episode"]}, '
                        f'FPS: {train_info["fps"]}, '
