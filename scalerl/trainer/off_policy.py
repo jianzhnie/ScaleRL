@@ -199,6 +199,7 @@ class OffPolicyTrainer(BaseTrainer):
             # Take action in environment
             next_obs, reward, terminated, truncated, info = self.train_env.step(
                 action)
+
             done = np.logical_or(terminated, truncated)
             # Update metrics
             self.train_metrics.update(reward, terminated, truncated)
@@ -249,6 +250,7 @@ class OffPolicyTrainer(BaseTrainer):
 
     def run(self) -> None:
         """Starts the training process."""
+        print(f'\nDistributed training on {self.accelerator.device}...')
         if self._is_main_process():
             self.text_logger.info('Start Training')
 
@@ -289,15 +291,17 @@ class OffPolicyTrainer(BaseTrainer):
                 int(self.global_step / (time.time() - self.start_time)),
             })
 
-            if self.accelerator is not None:
-                self.accelerator.wait_for_everyone()
             # Log training information at specified intervals
-            if self.global_step % self.args.train_log_interval == 0:
-                self.log_training_info(train_info)
-
             if self.accelerator is not None:
                 self.accelerator.wait_for_everyone()
+                if self._is_main_process():
+                    if self.global_step % self.args.train_log_interval == 0:
+                        self.log_training_info(train_info)
+                self.accelerator.wait_for_everyone()
+
             # Log evaluation information at specified intervals
+            if self.accelerator is not None:
+                self.accelerator.wait_for_everyone()
             if self.global_step % self.args.test_log_interval == 0:
                 self.log_evaluation_info(train_info)
 
@@ -307,8 +311,7 @@ class OffPolicyTrainer(BaseTrainer):
 
     def log_training_info(self, train_info: Dict[str, Any]) -> None:
         """Logs training information."""
-        if not self._is_main_process():
-            return
+
         log_message = (f'[Train] Step: {self.global_step}, '
                        f'Episodes: {train_info["num_episode"]}, '
                        f'FPS: {train_info["fps"]}, '
@@ -322,11 +325,11 @@ class OffPolicyTrainer(BaseTrainer):
         test_info = self.run_evaluate_episodes(
             n_eval_episodes=self.args.eval_episodes)
         test_info['num_episode'] = self.episode_cnt
-        if not self._is_main_process():
-            return
         log_message = (f'[Eval] Step: {self.global_step}, '
                        f'Episodes: {train_info["num_episode"]}, '
                        f'Episode Reward: {test_info["episode_return"]:.2f}, '
                        f'Episode Length :{test_info["episode_length"]} ')
-        self.text_logger.info(log_message)
-        self.log_test_infos(test_info, self.global_step)
+
+        if self._is_main_process():
+            self.text_logger.info(log_message)
+            self.log_test_infos(test_info, self.global_step)
