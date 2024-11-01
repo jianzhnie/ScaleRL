@@ -254,8 +254,7 @@ class OffPolicyTrainer(BaseTrainer):
         if self._is_main_process():
             self.text_logger.info('Start Training')
 
-        if self._is_main_process():
-            progress_bar = ProgressBar(self.args.max_timesteps)
+        progress_bar = ProgressBar(self.args.max_timesteps)
 
         while self.global_step < self.args.max_timesteps:
             # Train an episode
@@ -265,8 +264,7 @@ class OffPolicyTrainer(BaseTrainer):
             train_info = self.run_train_episode()
             env_steps = self.args.rollout_length * self.num_envs
             self.global_step += env_steps
-            if self._is_main_process():
-                progress_bar.update(env_steps)
+            progress_bar.update(env_steps)
             self.episode_cnt += train_info['episode_cnt']
 
             # Prepare logging information
