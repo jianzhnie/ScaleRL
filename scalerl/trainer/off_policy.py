@@ -288,16 +288,10 @@ class OffPolicyTrainer(BaseTrainer):
             })
 
             # Log training information at specified intervals
-            if self.accelerator is not None:
-                self.accelerator.wait_for_everyone()
-                if self._is_main_process():
-                    if self.global_step % self.args.train_log_interval == 0:
-                        self.log_training_info(train_info)
-                self.accelerator.wait_for_everyone()
-
+            if self._is_main_process():
+                if self.global_step % self.args.train_log_interval == 0:
+                    self.log_training_info(train_info)
             # Log evaluation information at specified intervals
-            if self.accelerator is not None:
-                self.accelerator.wait_for_everyone()
             if self.global_step % self.args.test_log_interval == 0:
                 self.log_evaluation_info(train_info)
 

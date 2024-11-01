@@ -135,7 +135,7 @@ def print_log(msg, logger=None, level=logging.INFO):
             f'"silent" or None, but got {type(logger)}')
 
 
-def get_text_logger(name: str = 'rltoolkit',
+def get_text_logger(name: str = 'scalerl',
                     log_file: str = None,
                     log_level: int = logging.INFO) -> logging.Logger:
     """Get root logger.

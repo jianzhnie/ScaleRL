@@ -4,7 +4,6 @@ Provides common functionality for training and testing RL agents.
 """
 
 import os
-import threading
 import time
 from abc import ABC
 from dataclasses import asdict
@@ -66,8 +65,6 @@ class BaseTrainer(ABC):
         self.agent = agent
         self.accelerator = accelerator
 
-        # Initialize locks for thread safety
-        self._log_lock = threading.Lock()
         # Set up logging directories and names
         self._setup_logging_structure()
         # Initialize loggers based on configuration
@@ -91,13 +88,13 @@ class BaseTrainer(ABC):
         )
 
         # Create logging directories
-        self.tb_log_dir = get_outdir(self.args.work_dir, 'tb_log')
-        self.text_log_dir = get_outdir(self.args.work_dir, 'text_log')
+        self.tb_log_dir = get_outdir(self.work_dir, 'tb_log')
+        self.text_log_dir = get_outdir(self.work_dir, 'text_log')
         self.text_log_file = os.path.join(self.text_log_dir,
                                           f'{self.log_name}.log')
         # Set up additional directories
-        self.video_save_dir = get_outdir(self.args.work_dir, 'video_dir')
-        self.model_save_dir = get_outdir(self.args.work_dir, 'model_dir')
+        self.video_save_dir = get_outdir(self.work_dir, 'video_dir')
+        self.model_save_dir = get_outdir(self.work_dir, 'model_dir')
         self.text_logger = get_text_logger(log_file=self.text_log_file,
                                            log_level='INFO')
 
@@ -110,16 +107,14 @@ class BaseTrainer(ABC):
         # Initialize text logger
         if not self._is_main_process():
             return
-
-        with self._log_lock:
-            try:
-                # Initialize visualization logger
-                if self.args.logger == 'wandb':
-                    self._setup_wandb_logger()
-                else:
-                    self._setup_tensorboard_logger()
-            except Exception as e:
-                self.text_logger.error(f'Error initializing loggers: {str(e)}')
+        try:
+            # Initialize visualization logger
+            if self.args.logger == 'wandb':
+                self._setup_wandb_logger()
+            else:
+                self._setup_tensorboard_logger()
+        except Exception as e:
+            self.text_logger.error(f'Error initializing loggers: {str(e)}')
 
     def _setup_wandb_logger(self) -> None:
         """Set up Weights & Biases logger."""
@@ -138,18 +133,12 @@ class BaseTrainer(ABC):
             )
             self.vis_logger.load(self.writer)
 
-        if self.accelerator is not None:
-            self.accelerator.wait_for_everyone()
-
     def _setup_tensorboard_logger(self) -> None:
         """Set up TensorBoard logger."""
         if self._is_main_process():
             self.writer = SummaryWriter(self.tb_log_dir)
             self.writer.add_text('args', str(self.args))
             self.vis_logger = TensorboardLogger(self.writer)
-
-        if self.accelerator is not None:
-            self.accelerator.wait_for_everyone()
 
     def run_train_episode(self) -> LogInfo:
         """Run a single training episode.
