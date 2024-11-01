@@ -190,6 +190,7 @@ class OffPolicyTrainer(BaseTrainer):
         """
         episode_results = []
         obs, info = self.train_env.reset()
+        self.train_metrics.reset()
         for _ in range(self.args.rollout_length):
             # Agent action
             action = self.agent.get_action(obs)
@@ -298,7 +299,7 @@ class OffPolicyTrainer(BaseTrainer):
 
             # Log evaluation information at specified intervals
             if self.global_step % self.args.test_log_interval == 0:
-                self.log_evaluation_info()
+                self.log_evaluation_info(train_info)
 
         # Save the model if specified
         if self.args.save_model:
@@ -307,21 +308,21 @@ class OffPolicyTrainer(BaseTrainer):
     def log_training_info(self, train_info: Dict[str, Any]) -> None:
         """Logs training information."""
         log_message = (f'[Train] Step: {self.global_step}, '
-                       f'Episodes: {self.train_metrics.episode_count}, '
+                       f'Episodes: {train_info["num_episode"]}, '
                        f'FPS: {train_info["fps"]}, '
-                       f'Episode Reward: {train_info["episode_reward"]:.2f}, '
+                       f'Episode Reward: {train_info["episode_return"]:.2f}, '
                        f'Episode Length :{train_info["episode_length"]} ')
         self.text_logger.info(log_message)
         self.log_train_infos(train_info, self.global_step)
 
-    def log_evaluation_info(self) -> None:
+    def log_evaluation_info(self, train_info) -> None:
         """Logs evaluation information."""
         test_info = self.run_evaluate_episodes(
             n_eval_episodes=self.args.eval_episodes)
         test_info['num_episode'] = self.episode_cnt
         log_message = (f'[Eval] Step: {self.global_step}, '
-                       f'Episodes: {self.train_metrics.episode_count}, '
-                       f'Episode Reward: {test_info["episode_reward"]:.2f}, '
+                       f'Episodes: {train_info["num_episode"]}, '
+                       f'Episode Reward: {test_info["episode_return"]:.2f}, '
                        f'Episode Length :{test_info["episode_length"]} ')
         self.text_logger.info(log_message)
         self.log_test_infos(test_info, self.global_step)

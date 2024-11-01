@@ -66,12 +66,12 @@ class EpisodeMetrics:
             return {
                 'episode_cnt': 0,
                 'episode_return': 0.0,
-                'episode_length': 0.0
+                'episode_length': 0
             }
         return {
             'episode_cnt': self.episode_count,
             'episode_return': float(np.mean(self.completed_returns)),
-            'episode_length': float(np.mean(self.completed_lengths)),
+            'episode_length': int(np.mean(self.completed_lengths)),
         }
 
     def __str__(self) -> str:
@@ -79,7 +79,7 @@ class EpisodeMetrics:
         metrics = self.get_episode_info()
         return (f"Episodes: {metrics['episode_count']}\n"
                 f"Mean Return: {metrics['episode_return']:.2f}\n"
-                f"Mean Length: {metrics['episode_length']:.1f}")
+                f"Mean Length: {metrics['episode_length']}")
 
 
 def make_vect_envs(env_name, num_envs=1):

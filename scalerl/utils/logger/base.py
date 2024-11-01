@@ -71,10 +71,8 @@ class BaseLogger(ABC):
             # log_data = {f'test/{k}': v for k, v in collect_result.items()}
             log_data = {
                 'test/env_step': step,
-                'test/reward_mean': collect_result['reward_mean'],
-                'test/length_mean': collect_result['length_mean'],
-                'test/reward_std': collect_result['reward_std'],
-                'test/length_std': collect_result['length_std'],
+                'test/episode_return': collect_result['episode_return'],
+                'test/episode_length': collect_result['episode_length'],
             }
             self.write('test/env_step', step, log_data)
             self.last_log_test_step = step
