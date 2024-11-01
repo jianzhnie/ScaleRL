@@ -196,14 +196,9 @@ class OffPolicyTrainer(BaseTrainer):
             action = self.agent.get_action(obs)
             action = action[0] if not self.is_vectorised else action
 
-            try:
-                # Take action in environment
-                next_obs, reward, terminated, truncated, info = self.train_env.step(
-                    action)
-            except Exception as e:
-                self.text_logger.error(f'Error during environment step: {e}')
-                break  # Exit on error
-
+            # Take action in environment
+            next_obs, reward, terminated, truncated, info = self.train_env.step(
+                action)
             done = np.logical_or(terminated, truncated)
             # Update metrics
             self.train_metrics.update(reward, terminated, truncated)
@@ -254,7 +249,8 @@ class OffPolicyTrainer(BaseTrainer):
 
     def run(self) -> None:
         """Starts the training process."""
-        self.text_logger.info('Start Training')
+        if self._is_main_process():
+            self.text_logger.info('Start Training')
 
         if self.accelerator is not None:
             self.accelerator.wait_for_everyone()
@@ -271,7 +267,7 @@ class OffPolicyTrainer(BaseTrainer):
             train_info = self.run_train_episode()
             env_steps = self.args.rollout_length * self.num_envs
             self.global_step += env_steps
-            if progress_bar:
+            if self._is_main_process():
                 progress_bar.update(env_steps)
             self.episode_cnt += train_info['episode_cnt']
 
@@ -293,10 +289,14 @@ class OffPolicyTrainer(BaseTrainer):
                 int(self.global_step / (time.time() - self.start_time)),
             })
 
+            if self.accelerator is not None:
+                self.accelerator.wait_for_everyone()
             # Log training information at specified intervals
             if self.global_step % self.args.train_log_interval == 0:
                 self.log_training_info(train_info)
 
+            if self.accelerator is not None:
+                self.accelerator.wait_for_everyone()
             # Log evaluation information at specified intervals
             if self.global_step % self.args.test_log_interval == 0:
                 self.log_evaluation_info(train_info)
@@ -307,7 +307,8 @@ class OffPolicyTrainer(BaseTrainer):
 
     def log_training_info(self, train_info: Dict[str, Any]) -> None:
         """Logs training information."""
-
+        if not self._is_main_process():
+            return
         log_message = (f'[Train] Step: {self.global_step}, '
                        f'Episodes: {train_info["num_episode"]}, '
                        f'FPS: {train_info["fps"]}, '
@@ -321,6 +322,8 @@ class OffPolicyTrainer(BaseTrainer):
         test_info = self.run_evaluate_episodes(
             n_eval_episodes=self.args.eval_episodes)
         test_info['num_episode'] = self.episode_cnt
+        if not self._is_main_process():
+            return
         log_message = (f'[Eval] Step: {self.global_step}, '
                        f'Episodes: {train_info["num_episode"]}, '
                        f'Episode Reward: {test_info["episode_return"]:.2f}, '
