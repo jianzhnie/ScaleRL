@@ -66,12 +66,12 @@ class BaseTrainer(ABC):
         self.agent = agent
         self.accelerator = accelerator
 
+        # Initialize locks for thread safety
+        self._log_lock = threading.Lock()
         # Set up logging directories and names
         self._setup_logging_structure()
         # Initialize loggers based on configuration
         self._initialize_loggers()
-        # Initialize locks for thread safety
-        self._log_lock = threading.Lock()
 
     def _setup_logging_structure(self) -> None:
         """Set up the directory structure and naming for logs."""
@@ -111,7 +111,7 @@ class BaseTrainer(ABC):
         if not self._is_main_process():
             return
 
-        while self._log_lock:
+        with self._log_lock:
             try:
                 # Initialize visualization logger
                 if self.args.logger == 'wandb':
