@@ -67,43 +67,44 @@ class BaseTrainer(ABC):
 
         # Set up logging directories and names
         self._setup_logging_structure()
-
         # Initialize loggers based on configuration
         self._initialize_loggers()
 
-        # Set up additional directories
-        self.video_save_dir = get_outdir(self.work_dir, 'video_dir')
-        self.model_save_dir = get_outdir(self.work_dir, 'model_dir')
-
     def _setup_logging_structure(self) -> None:
         """Set up the directory structure and naming for logs."""
-        timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
-        self.log_name = os.path.join(self.args.project, self.args.env_id,
-                                     self.args.algo_name,
-                                     timestamp).replace(os.path.sep, '_')
+        if self.accelerator is None or self.accelerator.is_main_process:
+            timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
+            self.log_name = os.path.join(self.args.project, self.args.env_id,
+                                         self.args.algo_name,
+                                         timestamp).replace(os.path.sep, '_')
 
-        self.work_dir = os.path.join(self.args.work_dir, self.args.project,
-                                     self.args.env_id, self.args.algo_name)
+            self.work_dir = os.path.join(
+                self.args.work_dir,
+                self.args.project,
+                self.args.env_id,
+                self.args.algo_name,
+            )
 
-        # Create logging directories
-        self.tb_log_dir = get_outdir(self.work_dir, 'tb_log')
-        self.text_log_dir = get_outdir(self.work_dir, 'text_log')
-        self.text_log_file = os.path.join(self.text_log_dir,
-                                          f'{self.log_name}.log')
+            # Create logging directories
+            self.tb_log_dir = get_outdir(self.args.work_dir, 'tb_log')
+            self.text_log_dir = get_outdir(self.args.work_dir, 'text_log')
+            self.text_log_file = os.path.join(self.text_log_dir,
+                                              f'{self.log_name}.log')
+            # Set up additional directories
+            self.video_save_dir = get_outdir(self.args.work_dir, 'video_dir')
+            self.model_save_dir = get_outdir(self.args.work_dir, 'model_dir')
+            self.text_logger = get_text_logger(log_file=self.text_log_file,
+                                               log_level='INFO')
 
     def _initialize_loggers(self) -> None:
         """Initialize text and visualization loggers based on configuration."""
         # Initialize text logger
-        is_main_process = self.accelerator is None or self.accelerator.is_main_process
-        if is_main_process:
-            self.text_logger = get_text_logger(log_file=self.text_log_file,
-                                               log_level='INFO')
-
-        # Initialize visualization logger
-        if self.args.logger == 'wandb':
-            self._setup_wandb_logger()
-        else:
-            self._setup_tensorboard_logger()
+        if self.accelerator is None or self.accelerator.is_main_process:
+            # Initialize visualization logger
+            if self.args.logger == 'wandb':
+                self._setup_wandb_logger()
+            else:
+                self._setup_tensorboard_logger()
 
     def _setup_wandb_logger(self) -> None:
         """Set up Weights & Biases logger."""
