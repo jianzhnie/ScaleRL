@@ -4,6 +4,7 @@ Provides common functionality for training and testing RL agents.
 """
 
 import os
+import threading
 import time
 from abc import ABC
 from dataclasses import asdict
@@ -69,49 +70,61 @@ class BaseTrainer(ABC):
         self._setup_logging_structure()
         # Initialize loggers based on configuration
         self._initialize_loggers()
+        # Initialize locks for thread safety
+        self._log_lock = threading.Lock()
 
     def _setup_logging_structure(self) -> None:
         """Set up the directory structure and naming for logs."""
-        if self.accelerator is None or self.accelerator.is_main_process:
-            timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
-            self.log_name = os.path.join(self.args.project, self.args.env_id,
-                                         self.args.algo_name,
-                                         timestamp).replace(os.path.sep, '_')
+        if not self._is_main_process():
+            return
 
-            self.work_dir = os.path.join(
-                self.args.work_dir,
-                self.args.project,
-                self.args.env_id,
-                self.args.algo_name,
-            )
+        timestamp = time.strftime('%Y%m%d_%H%M%S', time.localtime())
+        self.log_name = os.path.join(self.args.project, self.args.env_id,
+                                     self.args.algo_name,
+                                     timestamp).replace(os.path.sep, '_')
 
-            # Create logging directories
-            self.tb_log_dir = get_outdir(self.args.work_dir, 'tb_log')
-            self.text_log_dir = get_outdir(self.args.work_dir, 'text_log')
-            self.text_log_file = os.path.join(self.text_log_dir,
-                                              f'{self.log_name}.log')
-            # Set up additional directories
-            self.video_save_dir = get_outdir(self.args.work_dir, 'video_dir')
-            self.model_save_dir = get_outdir(self.args.work_dir, 'model_dir')
-            self.text_logger = get_text_logger(log_file=self.text_log_file,
-                                               log_level='INFO')
+        self.work_dir = os.path.join(
+            self.args.work_dir,
+            self.args.project,
+            self.args.env_id,
+            self.args.algo_name,
+        )
+
+        # Create logging directories
+        self.tb_log_dir = get_outdir(self.args.work_dir, 'tb_log')
+        self.text_log_dir = get_outdir(self.args.work_dir, 'text_log')
+        self.text_log_file = os.path.join(self.text_log_dir,
+                                          f'{self.log_name}.log')
+        # Set up additional directories
+        self.video_save_dir = get_outdir(self.args.work_dir, 'video_dir')
+        self.model_save_dir = get_outdir(self.args.work_dir, 'model_dir')
+        self.text_logger = get_text_logger(log_file=self.text_log_file,
+                                           log_level='INFO')
+
+    def _is_main_process(self) -> bool:
+        """Check if current process is the main process."""
+        return self.accelerator is None or self.accelerator.is_main_process
 
     def _initialize_loggers(self) -> None:
         """Initialize text and visualization loggers based on configuration."""
         # Initialize text logger
-        if self.accelerator is None or self.accelerator.is_main_process:
-            # Initialize visualization logger
-            if self.args.logger == 'wandb':
-                self._setup_wandb_logger()
-            else:
-                self._setup_tensorboard_logger()
+        if not self._is_main_process():
+            return
+
+        while self._log_lock:
+            try:
+                # Initialize visualization logger
+                if self.args.logger == 'wandb':
+                    self._setup_wandb_logger()
+                else:
+                    self._setup_tensorboard_logger()
+            except Exception as e:
+                self.text_logger.error(f'Error initializing loggers: {str(e)}')
 
     def _setup_wandb_logger(self) -> None:
         """Set up Weights & Biases logger."""
-        if self.accelerator is not None:
-            self.accelerator.wait_for_everyone()
 
-        if self.accelerator is None or self.accelerator.is_main_process:
+        if self._is_main_process():
             self.writer = SummaryWriter(self.tb_log_dir)
             self.vis_logger = WandbLogger(
                 dir=self.work_dir,
@@ -130,10 +143,7 @@ class BaseTrainer(ABC):
 
     def _setup_tensorboard_logger(self) -> None:
         """Set up TensorBoard logger."""
-        if self.accelerator is not None:
-            self.accelerator.wait_for_everyone()
-
-        if self.accelerator is None or self.accelerator.is_main_process:
+        if self._is_main_process():
             self.writer = SummaryWriter(self.tb_log_dir)
             self.writer.add_text('args', str(self.args))
             self.vis_logger = TensorboardLogger(self.writer)
