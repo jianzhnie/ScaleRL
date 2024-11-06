@@ -77,7 +77,7 @@ class RLArguments:
     )
     # Training parameters
     max_timesteps: int = field(
-        default=30000,
+        default=10000,
         metadata={
             'help': 'Maximum number of training steps. Defaults to 12000'
         },
