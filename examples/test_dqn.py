@@ -2,7 +2,6 @@ import os
 import sys
 
 import gymnasium as gym
-import torch
 import tyro
 
 sys.path.append(os.getcwd())
@@ -30,10 +29,10 @@ if __name__ == '__main__':
 
     if accelerator is None:
         device = get_device(args.device)
+        args.num_processes = 1
     else:
         device = accelerator.device
-
-    args.num_processes = torch.cuda.device_count()
+        args.num_processes = accelerator.num_processes
 
     if accelerator is None or accelerator.is_main_process:
         print('---------------------------------------')
