@@ -262,7 +262,7 @@ class OffPolicyTrainer(BaseTrainer):
                 self.accelerator.wait_for_everyone()
 
             train_info = self.run_train_episode()
-            env_steps = self.args.rollout_length * self.num_envs
+            env_steps = self.args.rollout_length * self.num_envs * self.args.num_processes
             self.global_step += env_steps
             progress_bar.update(env_steps)
             self.episode_cnt += train_info['episode_cnt']
