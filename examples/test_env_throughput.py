@@ -29,15 +29,22 @@ def test_pure_gym(
         log (tqdm.tqdm): Log file to write results.
     """
 
-    def make(envname: str, gym_backend: str) -> gym_bc:
+    def make(envname: str = envname, gym_backend: str = gym_backend) -> gym_bc:
+        """Create a Gym environment.
+
+        Args:
+            envname (str): Name of the environment.
+            gym_backend (str): Gym backend to use ('gym' or 'gymnasium').
+
+        Returns:
+            gym_bc: The created Gym environment.
+        """
         with set_gym_backend(gym_backend):
             return gym_bc().make(envname)
 
     with set_gym_backend(gym_backend):
-        env = gym_bc().vector.AsyncVectorEnv([
-            make(envname=envname, gym_backend=gym_backend)
-            for _ in range(num_workers)
-        ])
+        env = gym_bc().vector.AsyncVectorEnv(
+            [make for _ in range(num_workers)])
     env.reset()
     global_step = 0
     start = time.time()
@@ -45,7 +52,7 @@ def test_pure_gym(
         env.step(env.action_space.sample())
         global_step += num_workers
     env.close()
-    log.write(f'pure gym: {total_frames/ (time.time() - start): 4.4f} fps\n')
+    log.write(f'pure gym: {total_frames / (time.time() - start): 4.4f} fps\n')
     log.flush()
 
 
@@ -69,24 +76,36 @@ def test_parallel_env(
         log (tqdm.tqdm): Log file to write results.
     """
 
-    def make(envname: str, gym_backend: str, device: str) -> GymEnv:
+    def make(envname: str = envname,
+             gym_backend: str = gym_backend,
+             device: str = 'cpu') -> GymEnv:
+        """Create a Gym environment.
+
+        Args:
+            envname (str): Name of the environment.
+            gym_backend (str): Gym backend to use ('gym' or 'gymnasium').
+            device (str): Device to use ('cpu' or 'cuda:0').
+
+        Returns:
+            GymEnv: The created Gym environment.
+        """
         with set_gym_backend(gym_backend):
             return GymEnv(envname, device=device)
 
-    penv = ParallelEnv(
-        num_workers,
-        EnvCreator(make(envname, gym_backend, device)),
-        device=device,
-    )
+    penv = ParallelEnv(num_workers, EnvCreator(make), device=device)
 
     with torch.inference_mode():
         penv.rollout(2)
         pbar = tqdm.tqdm(total=total_frames)
         t0 = time.time()
         data = None
-        for _ in range(100):
-            data = penv.rollout(100, break_when_any_done=False, out=data)
-            pbar.update(100 * num_workers)
+        rollout_len = 100
+        num_iters = total_frames // (num_workers * rollout_len)
+        for _ in range(num_iters):
+            data = penv.rollout(rollout_len,
+                                break_when_any_done=False,
+                                out=data)
+            pbar.update(rollout_len * num_workers)
     log.write(
         f'penv {device}: {total_frames / (time.time() - t0): 4.4f} fps\n')
     log.flush()
@@ -115,11 +134,23 @@ def test_single_collector_with_penv(
         log (tqdm.tqdm): Log file to write results.
     """
 
-    def make(envname: str, gym_backend: str, device: str) -> GymEnv:
+    def make(envname: str = envname,
+             gym_backend: str = gym_backend,
+             device: str = 'cpu') -> GymEnv:
+        """Create a Gym environment.
+
+        Args:
+            envname (str): Name of the environment.
+            gym_backend (str): Gym backend to use ('gym' or 'gymnasium').
+            device (str): Device to use ('cpu' or 'cuda:0').
+
+        Returns:
+            GymEnv: The created Gym environment.
+        """
         with set_gym_backend(gym_backend):
             return GymEnv(envname, device=device)
 
-    env_make = EnvCreator(make(envname, gym_backend, device=device))
+    env_make = EnvCreator(make)
     penv = ParallelEnv(num_workers, env_make, device=device)
     collector = SyncDataCollector(
         penv,
@@ -165,22 +196,35 @@ def test_gym_penv(
     """
 
     def make_env(
-        envname: str,
-        num_workers: int,
-        gym_backend: str,
-        device: Union[str, torch.device],
+        envname: str = envname,
+        num_workers: int = num_workers,
+        gym_backend: str = gym_backend,
+        device: Union[str, torch.device] = device,
     ) -> GymEnv:
+        """Create a Gym environment.
+
+        Args:
+            envname (str): Name of the environment.
+            num_workers (int): Number of worker processes.
+            gym_backend (str): Gym backend to use ('gym' or 'gymnasium').
+            device (Union[str, torch.device]): Device to use ('cpu' or 'cuda:0').
+
+        Returns:
+            GymEnv: The created Gym environment.
+        """
         with set_gym_backend(gym_backend):
             penv = GymEnv(envname, num_envs=num_workers, device=device)
         return penv
 
-    penv = make_env(envname, num_workers, gym_backend, device)
+    penv = make_env()
     penv.rollout(2)
     pbar = tqdm.tqdm(total=total_frames)
     t0 = time.time()
-    for _ in range(100):
-        penv.rollout(100, break_when_any_done=False)
-        pbar.update(num_workers * 100)
+    rollout_len = 100
+    num_iters = total_frames // (num_workers * rollout_len)
+    for _ in range(num_iters):
+        penv.rollout(rollout_len, break_when_any_done=False)
+        pbar.update(num_workers * rollout_len)
     log.write(
         f'gym penv {device}: {total_frames / (time.time() - t0): 4.4f} fps\n')
     log.flush()
@@ -210,17 +254,25 @@ def test_async_collector_with_penv(
         log (tqdm.tqdm): Log file to write results.
     """
 
-    def make_env(envname: str, gym_backend: str, device: str) -> GymEnv:
+    def make_env(envname: str = envname,
+                 gym_backend: str = gym_backend,
+                 device: str = 'cpu') -> GymEnv:
+        """Create a Gym environment.
+
+        Args:
+            envname (str): Name of the environment.
+            gym_backend (str): Gym backend to use ('gym' or 'gymnasium').
+            device (str): Device to use ('cpu' or 'cuda:0').
+
+        Returns:
+            GymEnv: The created Gym environment.
+        """
         with set_gym_backend(gym_backend):
             return GymEnv(envname, device='cpu')
 
     penv = ParallelEnv(
         num_workers // num_collectors,
-        EnvCreator(make_env(
-            envname,
-            gym_backend,
-            device,
-        )),
+        EnvCreator(make_env),
         device=device,
     )
     collector = MultiaSyncDataCollector(
@@ -270,9 +322,23 @@ def test_async_collector_with_gym_penv(
         log (tqdm.tqdm): Log file to write results.
     """
 
-    def make_env(envname: str, num_workers: int, gym_backend: str) -> GymEnv:
+    def make_env(
+        envname: str = envname,
+        num_workers: int = num_workers,
+        gym_backend: str = gym_backend,
+    ) -> GymEnv:
+        """Create a Gym environment.
+
+        Args:
+            envname (str): Name of the environment.
+            num_workers (int): Number of worker processes.
+            gym_backend (str): Gym backend to use ('gym' or 'gymnasium').
+
+        Returns:
+            GymEnv: The created Gym environment.
+        """
         with set_gym_backend(gym_backend):
-            penv = GymEnv(envname, num_envs=num_workers, device=device)
+            penv = GymEnv(envname, num_envs=num_workers, device='cpu')
         return penv
 
     penv = EnvCreator(
@@ -327,13 +393,23 @@ def test_sync_collector_with_penv(
         log (tqdm.tqdm): Log file to write results.
     """
 
-    def make_env(envname: str, gym_backend: str) -> GymEnv:
+    def make_env(envname: str = envname,
+                 gym_backend: str = gym_backend) -> GymEnv:
+        """Create a Gym environment.
+
+        Args:
+            envname (str): Name of the environment.
+            gym_backend (str): Gym backend to use ('gym' or 'gymnasium').
+
+        Returns:
+            GymEnv: The created Gym environment.
+        """
         with set_gym_backend(gym_backend):
-            return GymEnv(envname, device=device)
+            return GymEnv(envname, device='cpu')
 
     penv = ParallelEnv(
         num_workers // num_collectors,
-        EnvCreator(make_env(envname, gym_backend)),
+        EnvCreator(make_env),
         device=device,
     )
     collector = MultiSyncDataCollector(
@@ -383,7 +459,21 @@ def test_sync_collector_with_gym_penv(
         log (tqdm.tqdm): Log file to write results.
     """
 
-    def make_env(envname: str, num_workers: int, gym_backend: str) -> GymEnv:
+    def make_env(
+        envname: str = envname,
+        num_workers: int = num_workers,
+        gym_backend: str = gym_backend,
+    ) -> GymEnv:
+        """Create a Gym environment.
+
+        Args:
+            envname (str): Name of the environment.
+            num_workers (int): Number of worker processes.
+            gym_backend (str): Gym backend to use ('gym' or 'gymnasium').
+
+        Returns:
+            GymEnv: The created Gym environment.
+        """
         with set_gym_backend(gym_backend):
             penv = GymEnv(envname, num_envs=num_workers, device=device)
         return penv
