@@ -27,7 +27,13 @@ if __name__ == '__main__':
     args.action_bound = (train_env.action_space.high[0] if isinstance(
         train_env.action_space, gym.spaces.Box) else None)
 
-    args.device = get_device(args.device)
+    if accelerator is None:
+        device = get_device(args.device)
+        args.num_processes = 1
+    else:
+        device = accelerator.device
+        args.num_processes = accelerator.num_processes
+
     if accelerator is None or accelerator.is_main_process:
         print('---------------------------------------')
         print('Environment:', args.env_id)
@@ -35,7 +41,8 @@ if __name__ == '__main__':
         print('State Shape:', state_shape)
         print('Action Shape:', action_shape)
         print('Action Bound:', args.action_bound)
-        print('Device:', args.device)
+        print('Num Process:', args.num_processes)
+        print('Device:', device)
         print('---------------------------------------')
         print(args)
 
@@ -45,7 +52,7 @@ if __name__ == '__main__':
         state_shape=state_shape,
         action_shape=action_shape,
         accelerator=accelerator,
-        device=args.device,
+        device=device,
     )
     runner = OffPolicyTrainer(
         args,
@@ -53,6 +60,6 @@ if __name__ == '__main__':
         test_env=test_env,
         agent=agent,
         accelerator=accelerator,
-        device=args.device,
+        device=device,
     )
     runner.run()
