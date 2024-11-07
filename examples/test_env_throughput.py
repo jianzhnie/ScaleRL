@@ -100,13 +100,13 @@ def test_parallel_env(
         pbar = tqdm.tqdm(total=total_frames)
         t0 = time.time()
         data = None
-        rollout_len = 100
-        num_iters = total_frames // (num_workers * rollout_len)
+        rollout_length = 100
+        num_iters = total_frames // (num_workers * rollout_length)
         for _ in range(num_iters):
-            data = penv.rollout(rollout_len,
+            data = penv.rollout(rollout_length,
                                 break_when_any_done=False,
                                 out=data)
-            pbar.update(rollout_len * num_workers)
+            pbar.update(rollout_length * num_workers)
     log.write(
         f'penv {device}: {total_frames / (time.time() - t0): 4.4f} fps\n')
     log.flush()
@@ -221,11 +221,11 @@ def test_gym_penv(
     penv.rollout(2)
     pbar = tqdm.tqdm(total=total_frames)
     t0 = time.time()
-    rollout_len = 100
-    num_iters = total_frames // (num_workers * rollout_len)
+    rollout_length = 100
+    num_iters = total_frames // (num_workers * rollout_length)
     for _ in range(num_iters):
-        penv.rollout(rollout_len, break_when_any_done=False)
-        pbar.update(num_workers * rollout_len)
+        penv.rollout(rollout_length, break_when_any_done=False)
+        pbar.update(num_workers * rollout_length)
     log.write(
         f'gym penv {device}: {total_frames / (time.time() - t0): 4.4f} fps\n')
     log.flush()
@@ -269,7 +269,7 @@ def test_async_collector_with_penv(
             GymEnv: The created Gym environment.
         """
         with set_gym_backend(gym_backend):
-            return GymEnv(env_name, device='cpu')
+            return GymEnv(env_name, device=device)
 
     penv = ParallelEnv(
         num_workers // num_collectors,
@@ -327,6 +327,7 @@ def test_async_collector_with_gym_penv(
         env_name: str = env_name,
         num_workers: int = num_workers,
         gym_backend: str = gym_backend,
+        device: str = 'cpu',
     ) -> GymEnv:
         """Create a Gym environment.
 
@@ -339,13 +340,16 @@ def test_async_collector_with_gym_penv(
             GymEnv: The created Gym environment.
         """
         with set_gym_backend(gym_backend):
-            penv = GymEnv(env_name, num_envs=num_workers, device='cpu')
+            penv = GymEnv(env_name, num_envs=num_workers, device=device)
         return penv
 
-    penv = EnvCreator(lambda num_workers=num_workers // num_collectors:
-                      creat_env(env_name=env_name,
-                                num_workers=num_workers,
-                                gym_backend=gym_backend))
+    penv = EnvCreator(
+        lambda num_workers=num_workers // num_collectors: creat_env(
+            env_name=env_name,
+            num_workers=num_workers,
+            gym_backend=gym_backend,
+            device=device,
+        ))
     collector = MultiaSyncDataCollector(
         [penv] * num_collectors,
         policy=RandomPolicy(penv().action_spec),
@@ -395,8 +399,11 @@ def test_sync_collector_with_penv(
         log (tqdm.tqdm): Log file to write results.
     """
 
-    def creat_env(env_name: str = env_name,
-                  gym_backend: str = gym_backend) -> GymEnv:
+    def creat_env(
+        env_name: str = env_name,
+        gym_backend: str = gym_backend,
+        device: str = 'cpu',
+    ) -> GymEnv:
         """Create a Gym environment.
 
         Args:
@@ -407,7 +414,7 @@ def test_sync_collector_with_penv(
             GymEnv: The created Gym environment.
         """
         with set_gym_backend(gym_backend):
-            return GymEnv(env_name, device='cpu')
+            return GymEnv(env_name, device=device)
 
     penv = ParallelEnv(
         num_workers // num_collectors,
@@ -465,6 +472,7 @@ def test_sync_collector_with_gym_penv(
         env_name: str = env_name,
         num_workers: int = num_workers,
         gym_backend: str = gym_backend,
+        device: str = 'cpu',
     ) -> GymEnv:
         """Create a Gym environment.
 
@@ -481,7 +489,7 @@ def test_sync_collector_with_gym_penv(
         return penv
 
     penv = EnvCreator(lambda num_workers=num_workers // num_collectors:
-                      creat_env(env_name, num_workers, gym_backend))
+                      creat_env(env_name, num_workers, gym_backend, device))
     collector = MultiSyncDataCollector(
         [penv] * num_collectors,
         policy=RandomPolicy(penv().action_spec),
@@ -539,7 +547,7 @@ def main() -> None:
                 else:
                     gym_backend = 'gymnasium'
 
-                total_frames: int = num_workers * 10_00
+                total_frames: int = num_workers * 10_000
 
                 test_pure_gym(env_name, num_workers, gym_backend, total_frames,
                               log)
